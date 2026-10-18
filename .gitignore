@@ -1,0 +1,18 @@
+# Build output
+/bin/
+*.test
+*.out
+/coverage*
+
+# Local environment
+.env
+.env.*
+
+# Scratch worktrees and run output
+/.scratch/
+/run/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
