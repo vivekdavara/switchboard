@@ -252,6 +252,13 @@ func parseProvider(raw json.RawMessage, getenv func(string) string) (*Provider, 
 		if p.APIKey = getenv(p.APIKeyEnv); p.APIKey == "" {
 			return nil, fmt.Errorf("the environment variable %s (api_key_env) is unset or empty", p.APIKeyEnv)
 		}
+		// A key goes into a header, where a space or a control character either breaks the request (net/http
+		// refuses it, and every request then looked like an unreachable provider, a suspicion of the day-1 review
+		// confirmed with a trailing \r) or changes the key. The usual cause is a line ending from a .env file.
+		if strings.IndexFunc(p.APIKey, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
+			return nil, fmt.Errorf("the environment variable %s (api_key_env) holds a space or a control "+
+				"character (a line ending from a .env file?); no key does", p.APIKeyEnv)
+		}
 	}
 	return p, nil
 }

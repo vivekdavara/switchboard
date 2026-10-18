@@ -173,7 +173,9 @@ silent override), then decoding with unknown fields refused.
 - `listen` defaults to `127.0.0.1:8108`. Until day 3 brings client keys, anyone who can reach the port can spend the
   providers' keys, so the default is loopback only.
 - A provider's key is never in the file: `api_key_env` names an environment variable, which must be set and
-  non-empty when the gateway starts, or it refuses to start. Keys are never logged; a test checks the logs of a
+  non-empty when the gateway starts, or it refuses to start. A key with a space or a control character (a line ending
+  from a `.env` file) is refused too: net/http won't send it in a header, and every request would otherwise look
+  like an unreachable provider. Keys are never logged; a test checks the logs of a
   request for the key.
 - Checked at start: names unique and non-empty; `base_url` an absolute `http` or `https` URL without credentials, a
   query or a fragment; every model's provider exists; durations parse (timeouts positive, the grace may be 0);

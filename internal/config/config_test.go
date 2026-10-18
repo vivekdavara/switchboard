@@ -154,6 +154,22 @@ func TestMistakesAreRefusedAndNamed(t *testing.T) {
 	}
 }
 
+func TestAKeyWithASpaceOrAControlCharacterIsRefused(t *testing.T) {
+	for _, key := range []string{"sk-never-shown\r", "sk-never-shown\n", " sk-never-shown", "sk-never shown",
+		"sk-never-shown\t", "sk-never\x00shown", "sk-never-shown\x7f"} {
+		_, err := Parse([]byte(`{"providers":[{"name":"p","base_url":"http://h","api_key_env":"KEY"}],`+
+			`"models":[{"name":"m","provider":"p"}]}`), env(map[string]string{"KEY": key}))
+		if err == nil || !strings.Contains(err.Error(), "KEY (api_key_env) holds a space or a control character") ||
+			strings.Contains(err.Error(), "never") {
+			t.Errorf("%q: %v", key, err)
+		}
+	}
+	if _, err := Parse([]byte(`{"providers":[{"name":"p","base_url":"http://h","api_key_env":"KEY"}],`+
+		`"models":[{"name":"m","provider":"p"}]}`), env(map[string]string{"KEY": "sk-proj_AZaz09-+/=.~"})); err != nil {
+		t.Errorf("an ordinary key: %v", err)
+	}
+}
+
 func TestAKeyNeverAppearsInAnError(t *testing.T) {
 	const key = "sk-never-in-an-error"
 	for _, provider := range []string{
