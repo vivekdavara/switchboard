@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -180,12 +181,22 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	// 2. Size. A read blocked on a slow body doesn't watch the request's context, so a stop would otherwise cut it
 	// off with the connection, unanswered; on the shutdown cause, a read deadline in the past wakes it, and it gets
 	// its 503 like any other request still running (a suspicion of the day-1 review).
+	// The mutex keeps the callback from touching the connection once the read is over: stopWaking doesn't wait for a
+	// callback already running, and a ResponseController must not be used after ServeHTTP returns (harmless over
+	// HTTP/1, a use of a recycled stream over HTTP/2; the day-1 third review).
+	var mu sync.Mutex
+	reading := true
 	stopWaking := context.AfterFunc(r.Context(), func() {
-		if context.Cause(r.Context()) == ErrShutdown {
+		mu.Lock()
+		defer mu.Unlock()
+		if reading && context.Cause(r.Context()) == ErrShutdown {
 			http.NewResponseController(w).SetReadDeadline(time.Now())
 		}
 	})
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.cfg.MaxRequestBytes))
+	mu.Lock()
+	reading = false
+	mu.Unlock()
 	stopWaking()
 	x.requestBytes = len(body)
 	if err != nil {
