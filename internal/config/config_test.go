@@ -97,12 +97,17 @@ func TestMistakesAreRefusedAndNamed(t *testing.T) {
 		{"no base URL", file("", `{"name":"p"}`, m), "base_url is required"},
 		{"a relative base URL", file("", `{"name":"p","base_url":"/v1"}`, m), "absolute http or https"},
 		{"another scheme", file("", `{"name":"p","base_url":"ftp://h/v1"}`, m), "absolute http or https"},
-		{"no host", file("", `{"name":"p","base_url":"http:///v1"}`, m), "absolute http or https"},
-		{"credentials in the URL", file("", `{"name":"p","base_url":"https://u:secret@h/v1"}`, m),
-			"credentials don't belong"},
-		{"a query", file("", `{"name":"p","base_url":"http://h/v1?key=x"}`, m), "no query"},
-		{"an empty query", file("", `{"name":"p","base_url":"http://h/v1?"}`, m), "no query"},
-		{"a fragment", file("", `{"name":"p","base_url":"http://h/v1#x"}`, m), "no query or fragment"},
+		{"no host", file("", `{"name":"p","base_url":"http:///v1"}`, m), "no host"},
+		{"credentials in the URL", file("", `{"name":"p","base_url":"https://u:sk-hidden-42@h/v1"}`, m),
+			"credentials before an @"},
+		{"a key as the user", file("", `{"name":"p","base_url":"https://sk-hidden-42@h/v1"}`, m),
+			"credentials before an @"},
+		{"an unparseable URL", file("", `{"name":"p","base_url":"https://u:sk-hidden-42@h:4 4/v1"}`, m),
+			"can't be parsed"},
+		{"a query", file("", `{"name":"p","base_url":"http://h/v1?key=sk-hidden-42"}`, m), "must not have a query"},
+		{"an empty query", file("", `{"name":"p","base_url":"http://h/v1?"}`, m), "must not have a query"},
+		{"a fragment", file("", `{"name":"p","base_url":"http://h/v1#x"}`, m), "or a fragment"},
+		{"an empty fragment", file("", `{"name":"p","base_url":"http://h/v1#"}`, m), "or a fragment"},
 		{"a bad timeout", file("", `{"name":"p","base_url":"http://h","timeout":"soon"}`, m), "timeout"},
 		{"a zero timeout", file("", `{"name":"p","base_url":"http://h","timeout":"0s"}`, m), "timeout"},
 		{"a bad env name", file("", `{"name":"p","base_url":"http://h","api_key_env":"MY-KEY"}`, m), "MY-KEY"},
@@ -122,8 +127,8 @@ func TestMistakesAreRefusedAndNamed(t *testing.T) {
 		if !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: got %q, want it to contain %q", tc.name, err, tc.want)
 		}
-		if strings.Contains(err.Error(), "secret") {
-			t.Errorf("%s: the error shows the URL's password: %q", tc.name, err)
+		if strings.Contains(err.Error(), "sk-hidden-42") {
+			t.Errorf("%s: the error shows a secret from the URL: %q", tc.name, err)
 		}
 	}
 }

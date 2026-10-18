@@ -189,17 +189,25 @@ func parseProvider(raw json.RawMessage, getenv func(string) string) (*Provider, 
 		return nil, fmt.Errorf("name %q: use 1 to 64 letters, digits, '.', '_' or '-', starting with a letter or "+
 			"digit", p.Name)
 	}
+	// None of these errors repeats the URL, not even redacted: a key pasted into it can sit in the user name, the
+	// password or the query, and an unparseable URL can't be redacted at all (url.Error quotes it whole). The
+	// provider's index says which one is wrong (found in the day-1 review: u.Redacted() hid only a password).
 	u, err := url.Parse(base)
 	switch {
 	case base == "":
 		return nil, errors.New("base_url is required")
-	case err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "":
-		return nil, fmt.Errorf("base_url %q: want an absolute http or https URL", base)
+	case err != nil:
+		return nil, errors.New("base_url can't be parsed as a URL (not shown: it may hold a secret)")
 	case u.User != nil:
-		// A password in the URL would be a secret in the file, and in every log line that prints the URL.
-		return nil, fmt.Errorf("base_url %q: credentials don't belong in the URL; use api_key_env", u.Redacted())
-	case u.RawQuery != "" || u.Fragment != "" || strings.HasSuffix(base, "?") || strings.Contains(base, "#"):
-		return nil, fmt.Errorf("base_url %q: no query or fragment, please", base)
+		return nil, errors.New("base_url has credentials before an @; put the key in an environment variable " +
+			"and name it in api_key_env")
+	case u.Scheme != "http" && u.Scheme != "https":
+		return nil, errors.New("base_url must be an absolute http or https URL")
+	case u.Host == "":
+		return nil, errors.New("base_url has no host")
+	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(base, "#"):
+		return nil, errors.New("base_url must not have a query or a fragment (a key in a query belongs in " +
+			"api_key_env)")
 	}
 	p.BaseURL = strings.TrimRight(base, "/")
 	if timeout != "" {

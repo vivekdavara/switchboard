@@ -161,8 +161,10 @@ silent override), then decoding with unknown fields refused.
 - A provider's key is never in the file: `api_key_env` names an environment variable, which must be set and
   non-empty when the gateway starts, or it refuses to start. Keys are never logged; a test checks the logs of a
   request for the key.
-- Checked at start: names unique and non-empty; `base_url` an absolute `http` or `https` URL without a query or
-  fragment; every model's provider exists; durations parse and are positive; sizes positive.
+- Checked at start: names unique and non-empty; `base_url` an absolute `http` or `https` URL without credentials, a
+  query or a fragment; every model's provider exists; durations parse (timeouts positive, the grace may be 0);
+  sizes positive. No error repeats a `base_url`, not even redacted: a key pasted into it can sit in the user name,
+  the password or the query, and an unparseable URL can't be redacted at all (found in the day-1 review).
 - The checked-in `configs/local.json` points at the two mock providers, so `make demo` needs no key at all. Live
   providers are opt-in: a config that names one, and its key in the environment.
 
