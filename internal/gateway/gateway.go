@@ -163,13 +163,24 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Size.
+	// 2. Size. A read blocked on a slow body doesn't watch the request's context, so a stop would otherwise cut it
+	// off with the connection, unanswered; on the shutdown cause, a read deadline in the past wakes it, and it gets
+	// its 503 like any other request still running (a suspicion of the day-1 review).
+	stopWaking := context.AfterFunc(r.Context(), func() {
+		if context.Cause(r.Context()) == ErrShutdown {
+			http.NewResponseController(w).SetReadDeadline(time.Now())
+		}
+	})
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.cfg.MaxRequestBytes))
+	stopWaking()
 	x.requestBytes = len(body)
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		var netErr net.Error
 		switch {
+		case context.Cause(r.Context()) == ErrShutdown:
+			g.fail(w, x, openai.Errorf(http.StatusServiceUnavailable, openai.TypeServer, "", "shutting_down",
+				"the gateway is shutting down; retry"), err)
 		case errors.As(err, &tooBig):
 			g.fail(w, x, openai.Errorf(http.StatusRequestEntityTooLarge, openai.TypeInvalidRequest, "",
 				"request_too_large", "the body is larger than %d bytes", g.cfg.MaxRequestBytes), nil)

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -823,5 +824,40 @@ func TestOnlyAllowedHostsAreAnswered(t *testing.T) {
 	anyHost, _, _ := gatewayFor(t, `"allowed_hosts":["*"]`, []string{at(up, "")}, "fast=p0/mock-small")
 	if resp, _ := sendAs(t, anyHost, "attacker.example", "/v1/chat/completions"); resp.StatusCode != 200 {
 		t.Errorf(`"*": %d`, resp.StatusCode)
+	}
+}
+
+// A body still arriving when the stop cancels the requests: the read is woken and the client gets its 503, rather
+// than having the connection cut under it when the server closes (a suspicion of the day-1 review; before the
+// change this test hit its own deadline, the read never woke).
+func TestABodyStillArrivingAtTheStopGetsA503(t *testing.T) {
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	_, g, _ := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small")
+	base, stop := context.WithCancelCause(context.Background())
+	srv := httptest.NewUnstartedServer(g)
+	srv.Config.BaseContext = func(net.Listener) context.Context { return base }
+	srv.Start()
+	defer srv.Close()
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"+
+		"Content-Length: %d\r\n\r\n%s", len(ask), ask[:10])
+	time.Sleep(50 * time.Millisecond) // the handler is now reading the body
+	stop(ErrShutdown)
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("no answer: %v", err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if _, code, _, _ := errorOf(t, b); resp.StatusCode != 503 || code != "shutting_down" {
+		t.Errorf("%d %s", resp.StatusCode, b)
+	}
+	if n := len(up.requests()); n != 0 {
+		t.Errorf("the provider got %d requests", n)
 	}
 }

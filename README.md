@@ -279,8 +279,6 @@ limit changes nothing (the size check still catches it). The commit messages lis
 - A request arriving while the gateway stops can be reset rather than answered: a connection still waiting in the
   listener's queue when it closes is never served (seen in the mock's stop test). `drain_delay` with a load balancer
   in front is the cure.
-- A request whose body is still arriving when the grace runs out is cut off with its connection rather than answered
-  503: the body read doesn't watch the stop (a suspicion of the day-1 review, not tested).
 - A provider's error answer larger than `max_response_bytes` becomes a 502 and loses its status (the log keeps it).
 
 ## License

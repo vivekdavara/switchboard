@@ -133,8 +133,9 @@ no target is left does the client see them.
   gets "connection refused"; found in the day-1 review.) Then the listener closes, and requests in flight get
   `shutdown_grace` (default 10 s). Then every request context is cancelled (they all derive from the server's
   `BaseContext`) with the cause `gateway.ErrShutdown`, which cancels their upstream requests; each request still
-  running sees the cause and answers 503 `shutting_down` instead of being taken for a client that left; they get one
-  second to write it, and the server closes. `http.Server.Shutdown` alone returns at its deadline with handlers still
+  running sees the cause and answers 503 `shutting_down` instead of being taken for a client that left (one still
+  reading a slow body is woken by a read deadline set on the cause); they get one second to write it, and the
+  server closes. `http.Server.Shutdown` alone returns at its deadline with handlers still
   running (Ledger's day-2 review found this). Without the second to write, the 503 never arrived (3 of 3 runs of
   `TestARequestStillRunningAfterTheGraceGetsA503` with that step removed).
 - A connection still waiting in the listener's accept queue when the listener closes is reset, not served: the
