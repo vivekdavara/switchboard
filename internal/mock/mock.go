@@ -115,23 +115,7 @@ func New(cfg Config) (*Provider, error) {
 }
 
 // ServeHTTP answers a request. Unknown paths and wrong methods get OpenAI-shaped 404s and 405s.
-func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if _, pattern := p.mux.Handler(r); pattern == "" {
-		// ServeMux would answer text/plain; find out which of the two it would have been.
-		rec := &statusOnly{header: http.Header{}}
-		p.mux.ServeHTTP(rec, r)
-		if rec.status == http.StatusMethodNotAllowed {
-			w.Header()["Allow"] = rec.header["Allow"]
-			openai.WriteError(w, openai.Errorf(http.StatusMethodNotAllowed, openai.TypeInvalidRequest, "",
-				"method_not_allowed", "%s is not allowed on %s", r.Method, r.URL.Path))
-			return
-		}
-		openai.WriteError(w, openai.Errorf(http.StatusNotFound, openai.TypeInvalidRequest, "", "unknown_url",
-			"unknown request URL: %s %s", r.Method, r.URL.Path))
-		return
-	}
-	p.mux.ServeHTTP(w, r)
-}
+func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) { openai.Serve(p.mux, w, r) }
 
 // Close drops the connection of every request the provider is holding (hung, or waiting out its latency), at once,
 // as a provider that dies would. Requests that come later are still served; Close is for shutting down.
@@ -344,13 +328,3 @@ func (p *Provider) models(w http.ResponseWriter, r *http.Request) {
 	b, _ := json.Marshal(list)
 	openai.WriteJSON(w, http.StatusOK, b)
 }
-
-// statusOnly records what ServeMux would answer, to tell its 404 from its 405.
-type statusOnly struct {
-	header http.Header
-	status int
-}
-
-func (s *statusOnly) Header() http.Header         { return s.header }
-func (s *statusOnly) Write(b []byte) (int, error) { return len(b), nil }
-func (s *statusOnly) WriteHeader(status int)      { s.status = status }
