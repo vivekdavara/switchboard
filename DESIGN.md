@@ -39,7 +39,9 @@ circuit breakers; day 3 puts Redis (port 6382) beside the gateway for rate limit
 | `GET /livez` | 200 while the process runs. |
 | `GET /readyz` | 200 once the configuration is loaded and the listener is open; 503 during a stop's `drain_delay`. |
 
-Every error, the gateway's own included, has OpenAI's error shape, so SDKs read it like any other API error:
+Every error from the API's endpoints, the gateway's own included, has OpenAI's error shape, so SDKs read it like
+any other API error (the health endpoints answer in plain text, and so does net/http itself when it refuses a request
+before any handler runs: a malformed request line, headers over 1 MB):
 
 ```json
 {"error": {"message": "the model \"gpt-9\" is not served here", "type": "invalid_request_error", "param": "model", "code": "model_not_found"}}
@@ -79,9 +81,10 @@ An unknown path is 404 and a known path with the wrong method is 405 with an `Al
    acted on.
 5. **Route.** The model name is looked up in the configuration: a provider and the provider's name for the model.
    An unknown name is 404 with code `model_not_found`, as OpenAI answers.
-6. **Rewrite.** The body sent upstream is the client's top-level members, in their order and byte for byte, with
-   only `model`'s value replaced by the upstream name. Re-encoding the whole request through Go structs would drop
-   every field the structs don't name.
+6. **Rewrite.** The body sent upstream is the client's top-level members, in their order, each value byte for byte,
+   with only `model`'s value replaced by the upstream name. The keys are written again from what they decode to
+   (`"\u006dodel"` goes up as `"model"`, `<` in a key as `\u003c`), which is how any provider reads them anyway.
+   Re-encoding the whole request through Go structs would drop every field the structs don't name.
 7. **Forward.** `POST <base_url>/chat/completions` with `Content-Type: application/json`, `Accept:
    application/json`, `X-Request-Id`, and `Authorization: Bearer <key>` if the provider has a key. No other client
    header goes upstream: not the client's `Authorization` (its key for the gateway is no business of the
@@ -103,8 +106,9 @@ gateway's key is wrong; an SDK given 401 tells its user that *their* key is wron
 | answers any of those without a JSON object | the same status, with a gateway error body saying so |
 | answers 401 or 403 | 502, code `upstream_auth`: the gateway's key for the provider was refused |
 | answers 404 | 502, code `upstream_error`: the provider doesn't know the upstream model or the path (a configuration error) |
-| answers any other status (5xx, 3xx, 1xx, other 4xx) | 502, code `upstream_error`, naming the status |
-| answers 200 without a JSON object, or more than `max_response_bytes` (16 MiB) | 502, code `upstream_error` |
+| answers any other status (5xx, 3xx, other 4xx; Go's client handles 1xx itself) | 502, code `upstream_error`, naming the status |
+| answers 200 without a JSON object | 502, code `upstream_error` |
+| answers more than `max_response_bytes` (16 MiB), whatever the status | 502, code `upstream_error` (the status is in the log) |
 | can't be reached (refused, reset, DNS) | 502, code `upstream_unavailable` |
 | hasn't finished answering within the provider's `timeout` | 504, code `upstream_timeout` |
 
@@ -194,8 +198,9 @@ deterministic given its seed, so a test can say exactly what it will answer.
   message, then filler words. It counts a word as a token (it has no tokenizer, and says so): `prompt_tokens` is the
   number of words in all messages, `completion_tokens` the words it wrote. It writes `-completion-tokens` words (32
   by default), or `max_completion_tokens` / `max_tokens` if smaller, with `finish_reason` `length` when cut short.
-- **Latency.** Time to first token plus a time per token for every word written, `-ttft 200ms -per-token 5ms` by
-  default, each scaled by a random factor in `[1-j, 1+j]` with `-jitter j`. An answer of 32 words takes about 360 ms.
+- **Latency.** Time to first token plus a time per token for every word of one choice, `-ttft 200ms -per-token 5ms`
+  by default, each scaled by a random factor in `[1-j, 1+j]` with `-jitter j`. An answer of 32 words takes about
+  360 ms. With `n` choices it takes the same time, as a model writing them side by side would.
 - **Errors.** `-error-rate p` answers a fraction p of requests with `-error-status` (500 by default) and an OpenAI
   error body, before any delay; `-hang-rate p` never answers a fraction p, until the client gives up. The draws come
   from one RNG seeded with `-seed`, four per request whatever the fate, so a run's sequence of outcomes is fixed.

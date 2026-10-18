@@ -31,7 +31,7 @@ flowchart LR
 
 | Package | What it does |
 |---|---|
-| `internal/jsonstrict` | Accepts a body only if every JSON parser reads it the same way; returns its top-level members byte for byte. |
+| `internal/jsonstrict` | Accepts a body only if every JSON parser reads it the same way; returns its top-level members, values byte for byte. |
 | `internal/openai` | The request fields the gateway acts on, the rewrite of `model`, OpenAI's error shape, JSON 404s and 405s. |
 | `internal/config` | The JSON configuration, read strictly; provider keys only from environment variables. |
 | `internal/gateway` | The handler: check, route, forward, map. |
@@ -106,7 +106,8 @@ loads a configuration and prints its routes.
 | `GET /livez` | 200 while the process runs. |
 | `GET /readyz` | 200 while serving; 503 during a stop's `drain_delay`, while everything else is still served. |
 
-Every error, the gateway's own included, has OpenAI's error shape, so SDKs raise their usual exceptions:
+Every error from the API's endpoints, the gateway's own included, has OpenAI's error shape, so SDKs raise their
+usual exceptions (the health endpoints answer in plain text):
 
 ```json
 {"error": {"message": "the model \"gpt-9\" is not served here; GET /v1/models lists the ones that are", "type": "invalid_request_error", "param": "model", "code": "model_not_found"}}
@@ -117,7 +118,8 @@ the loopback names, against DNS rebinding), a content type other than `applicati
 `max_request_bytes` (413), a body with more than one meaning (a key given twice, invalid UTF-8, data after the
 object: 400), a missing or malformed `model`, `messages` or `stream` (400), and an unknown model (404). Everything
 else in the request (`temperature`, `tools`, `response_format`, parameters that don't exist yet) passes through
-byte for byte. Only `model` is rewritten, to the provider's name for the model.
+byte for byte (top-level keys are written again from what they decode to). Only `model` is rewritten, to the
+provider's name for the model.
 
 What the client gets for each provider outcome:
 
@@ -228,7 +230,11 @@ them.
 - `/v1/chat/completions` only: no embeddings, legacy completions, files or assistants.
 - The mock counts words, not tokens.
 - A request arriving while the gateway stops can be reset rather than answered: a connection still waiting in the
-  listener's queue when it closes is never served (seen in the mock's stop test).
+  listener's queue when it closes is never served (seen in the mock's stop test). `drain_delay` with a load balancer
+  in front is the cure.
+- A request whose body is still arriving when the grace runs out is cut off with its connection rather than answered
+  503: the body read doesn't watch the stop (a suspicion of the day-1 review, not tested).
+- A provider's error answer larger than `max_response_bytes` becomes a 502 and loses its status (the log keeps it).
 
 ## License
 

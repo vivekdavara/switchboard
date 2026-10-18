@@ -20,7 +20,7 @@ import (
 // chat request nests a few levels per property; 128 leaves room for any real one and bounds the parser's stack.
 const MaxDepth = 128
 
-// Member is one key of an object and its value, byte for byte as the client wrote it.
+// Member is one key of an object, as it decodes, and its value, byte for byte as the client wrote it.
 type Member struct {
 	Key   string
 	Value json.RawMessage

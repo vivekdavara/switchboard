@@ -207,8 +207,9 @@ func (r *ChatRequest) Member(key string) (json.RawMessage, bool) {
 	return nil, false
 }
 
-// WithModel is the request body to send upstream: the client's members in their order and byte for byte, with only
-// model's value replaced. model must be valid UTF-8, as anything read from the configuration is (json.Marshal would
+// WithModel is the request body to send upstream: the client's members in their order, each value byte for byte,
+// with only model's value replaced. Keys are encoded again from what they decode to, which is what every provider
+// reads (the day-1 review noted that "byte for byte" overstated it for keys). model must be valid UTF-8, as anything read from the configuration is (json.Marshal would
 // turn bad bytes into U+FFFD; the fuzz test found this with a model only it could make).
 func (r *ChatRequest) WithModel(model string) []byte {
 	var b bytes.Buffer
