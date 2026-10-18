@@ -26,6 +26,9 @@ jobs:
       - name: Test
         # Below the job timeout, so a hung test is named in the log instead of the job just being killed.
         run: go test -race -count=1 -timeout 3m ./...
+      - name: Benchmarks run
+        # Not a measurement (a shared runner is noisy): only that every benchmark still runs. README has the numbers.
+        run: go test -run '^$' -bench . -benchtime 50x ./internal/gateway
 
   smoke:
     # The real binaries on their real ports: scripts/demo.sh starts two mock providers and the gateway, checks eight
