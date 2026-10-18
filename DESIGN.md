@@ -115,8 +115,16 @@ no target is left does the client see them.
   per provider, not a law.
 - Shutdown on SIGINT or SIGTERM: `/readyz` turns 503, the listener closes, and requests in flight get
   `shutdown_grace` (default 10 s). Then every request context is cancelled (they all derive from the server's
-  `BaseContext`), which cancels their upstream requests, and the server closes. `http.Server.Shutdown` alone returns
-  at its deadline with handlers still running (Ledger's day-2 review found this).
+  `BaseContext`) with the cause `gateway.ErrShutdown`, which cancels their upstream requests; each request still
+  running sees the cause and answers 503 `shutting_down` instead of being taken for a client that left; they get one
+  second to write it, and the server closes. `http.Server.Shutdown` alone returns at its deadline with handlers still
+  running (Ledger's day-2 review found this). Without the second to write, the 503 never arrived (3 of 3 runs of
+  `TestARequestStillRunningAfterTheGraceGetsA503` with that step removed).
+- A connection still waiting in the listener's accept queue when the listener closes is reset, not served: the
+  kernel finished its handshake, the client may even have written its request, but the server never accepted it.
+  The mock's stop test first waited only for the client to write, and saw exactly that. So a request that arrives
+  at the moment of a stop can fail with a reset rather than a 503; clients retry it like any connection error.
+  Draining at a load balancer (fail `/readyz`, wait, then stop) is the usual cure, and out of scope here.
 
 ## Connections to providers
 
@@ -179,6 +187,21 @@ deterministic given its seed, so a test can say exactly what it will answer.
 - The command is tested through `run`, main without the process, as Ledger's was: start, serve, stop on a cancelled
   context, exit codes.
 - CI runs `gofmt`, `go vet`, `go test -race`, and from day 1 a smoke test of the real binaries.
+
+As built on day 1, beyond that plan:
+
+- Two fuzz tests: `FuzzParseObjectAgreesWithItsOwnOutput` (every accepted body rebuilds from its members to the same
+  members) and `FuzzRewriteKeepsTheMeaning` (every accepted body's rewrite is read by encoding/json, as a Go
+  provider would read it, with the model the gateway routed, the same stream flag and the same roles). Their seeds
+  run in every `go test`; `make fuzz` runs the first for a minute.
+- The smoke test (`scripts/demo.sh`, `make demo`) checks eight requests with curl and six with the official OpenAI
+  Python SDK (`scripts/sdk_check.py`, the version pinned in `scripts/requirements-sdk.txt`): the SDK's own
+  exceptions for the gateway's 404 and 400 are part of what "compatible" means.
+- Mutation checks by hand (each mechanism removed or broken, the tests run, the code restored from a copy); the
+  commit messages list them. A mutant that doesn't build fails `go test` without testing anything, so each mutant
+  is built first.
+- Benchmarks (`make bench`): the gateway's overhead against calling the mock directly, its connection pool, and its
+  own work on a body. README "Results" has the numbers and how they were taken.
 
 ## Decisions and alternatives
 
