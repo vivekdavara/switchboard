@@ -104,7 +104,7 @@ loads a configuration and prints its routes.
 | `GET /v1/models` | The models this gateway serves, in OpenAI's list shape. |
 | `GET /v1/models/{model}` | One of them (404 `model_not_found` otherwise); SDKs call it to check a model exists. Names may hold slashes. |
 | `GET /livez` | 200 while the process runs. |
-| `GET /readyz` | 200 while serving; 503 before and during shutdown. |
+| `GET /readyz` | 200 while serving; 503 during a stop's `drain_delay`, while everything else is still served. |
 
 Every error, the gateway's own included, has OpenAI's error shape, so SDKs raise their usual exceptions:
 
@@ -152,7 +152,8 @@ the request to the provider and in the log line) and `X-Switchboard-Provider`.
 }
 ```
 
-Other settings: `max_request_bytes` (default 4 MiB), `max_response_bytes` (16 MiB; both at most 1 GiB), a provider's `timeout`
+Other settings: `max_request_bytes` (default 4 MiB), `max_response_bytes` (16 MiB; both at most 1 GiB),
+`drain_delay` (default 0: how long a stopping gateway keeps serving with `/readyz` at 503), a provider's `timeout`
 (default 60 s) and `api_key_env`. **No key is ever in a file:** `api_key_env` names the environment variable that
 holds it, and the gateway refuses to start if it is unset. A live provider is opt-in:
 `configs/openai.example.json` routes `gpt-4o-mini` to OpenAI with the key from `OPENAI_API_KEY`. Tests and CI use
@@ -209,9 +210,10 @@ them.
   preflight; a gateway on localhost that holds provider keys would spend them for any page its user visits.
 - **Loopback by default.** Until client keys exist (day 3), anyone who can reach the port can use the providers'
   keys.
-- **Stop in two steps.** Requests get the grace to finish; the ones still running are then cancelled through the
+- **Stop in steps.** `/readyz` turns 503 and the gateway keeps serving for `drain_delay` (so a load balancer can
+  stop sending first); then requests get the grace to finish; the ones still running are then cancelled through the
   server's base context with a shutdown cause, which cancels their provider requests and lets each answer 503.
-  `http.Server.Shutdown` alone returns at its deadline with handlers still running.
+  `http.Server.Shutdown` alone returns at its deadline with handlers still running. A second Ctrl-C ends it at once.
 - **No dependencies.** The standard library covers day 1; Redis and Prometheus come with days 3 and 4.
 
 ## Limitations (day 1)

@@ -42,8 +42,11 @@ type Config struct {
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
 	ShutdownGrace    time.Duration
-	Providers        []*Provider
-	Models           []Model
+	// DrainDelay is how long a stopping gateway keeps serving with /readyz at 503 before it closes its listener, so
+	// a load balancer that polls /readyz stops sending first. 0 (the default) closes at once.
+	DrainDelay time.Duration
+	Providers  []*Provider
+	Models     []Model
 
 	routes map[string]Model
 }
@@ -104,13 +107,14 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 		ShutdownGrace:    DefaultShutdownGrace,
 		routes:           map[string]Model{},
 	}
-	var grace string
+	var grace, drain string
 	var providers, models []json.RawMessage
 	if err := decodeExact("the file", top, fields{
 		"listen":             &c.Listen,
 		"max_request_bytes":  &c.MaxRequestBytes,
 		"max_response_bytes": &c.MaxResponseBytes,
 		"shutdown_grace":     &grace,
+		"drain_delay":        &drain,
 		"providers":          &providers,
 		"models":             &models,
 	}); err != nil {
@@ -131,6 +135,11 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 	if grace != "" {
 		if c.ShutdownGrace, err = time.ParseDuration(grace); err != nil || c.ShutdownGrace < 0 {
 			return nil, fmt.Errorf("shutdown_grace: %q is not a duration such as 10s", grace)
+		}
+	}
+	if drain != "" {
+		if c.DrainDelay, err = time.ParseDuration(drain); err != nil || c.DrainDelay < 0 {
+			return nil, fmt.Errorf("drain_delay: %q is not a duration such as 5s", drain)
 		}
 	}
 

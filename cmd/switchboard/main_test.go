@@ -40,10 +40,16 @@ func noEnv(string) string { return "" }
 // writeConfig writes a configuration that listens on a free port and sends model "fast" to upstream.
 func writeConfig(t *testing.T, upstream, grace string) string {
 	t.Helper()
+	return writeDrainingConfig(t, upstream, grace, "0s")
+}
+
+// writeDrainingConfig is writeConfig with a drain_delay.
+func writeDrainingConfig(t *testing.T, upstream, grace, drain string) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.json")
-	body := fmt.Sprintf(`{"listen":"127.0.0.1:0","shutdown_grace":%q,
+	body := fmt.Sprintf(`{"listen":"127.0.0.1:0","shutdown_grace":%q,"drain_delay":%q,
 		"providers":[{"name":"mock-a","base_url":%q,"timeout":"10s"}],
-		"models":[{"name":"fast","provider":"mock-a","upstream_model":"mock-small"}]}`, grace, upstream+"/v1")
+		"models":[{"name":"fast","provider":"mock-a","upstream_model":"mock-small"}]}`, grace, drain, upstream+"/v1")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +212,7 @@ func TestCheckPrintsTheRoutes(t *testing.T) {
 	var out bytes.Buffer
 	code := run(context.Background(), []string{"check", "-config", "../../configs/local.json"}, noEnv, &out,
 		io.Discard, nil)
-	want := `listen 127.0.0.1:8108, shutdown grace 10s, request limit 4194304 bytes, response limit 16777216 bytes
+	want := `listen 127.0.0.1:8108, drain 0s, shutdown grace 10s, request limit 4194304 bytes, response limit 16777216 bytes
 provider mock-a: http://127.0.0.1:8118/v1, timeout 10s, no key
 provider mock-b: http://127.0.0.1:8119/v1, timeout 10s, no key
 model fast -> mock-a as mock-small

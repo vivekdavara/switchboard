@@ -32,6 +32,12 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// After the first signal, the next gets Go's default handling: it ends the process at once, mid-drain or
+	// mid-grace, as an operator pressing Ctrl-C twice expects. Until main returned, NotifyContext swallowed it.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	os.Exit(run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr, nil))
 }
 
@@ -91,8 +97,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 }
 
 func printRoutes(w io.Writer, cfg *config.Config) {
-	fmt.Fprintf(w, "listen %s, shutdown grace %s, request limit %d bytes, response limit %d bytes\n", cfg.Listen,
-		cfg.ShutdownGrace, cfg.MaxRequestBytes, cfg.MaxResponseBytes)
+	fmt.Fprintf(w, "listen %s, drain %s, shutdown grace %s, request limit %d bytes, response limit %d bytes\n",
+		cfg.Listen, cfg.DrainDelay, cfg.ShutdownGrace, cfg.MaxRequestBytes, cfg.MaxResponseBytes)
 	for _, p := range cfg.Providers {
 		key := "no key"
 		if p.APIKeyEnv != "" {
@@ -146,7 +152,14 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, listening 
 		return 1
 	case <-ctx.Done():
 	}
+	// /readyz turns 503 first. Shutdown closes the listener at once, so nobody could see that 503 unless the
+	// gateway keeps serving a while: drain_delay is that while (found in the day-1 review: with the listener
+	// closing in the same instant, a probe only ever got "connection refused").
 	g.SetReady(false)
+	if cfg.DrainDelay > 0 {
+		log.Info("draining", "delay", cfg.DrainDelay.String())
+		time.Sleep(cfg.DrainDelay)
+	}
 	log.Info("stopping", "grace", cfg.ShutdownGrace.String())
 	grace, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
 	defer cancel()

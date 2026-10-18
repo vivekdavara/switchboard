@@ -37,7 +37,7 @@ circuit breakers; day 3 puts Redis (port 6382) beside the gateway for rate limit
 | `GET /v1/models` | The models this gateway serves, in OpenAI's list shape. |
 | `GET /v1/models/{model}` | One of them, or 404 `model_not_found`. Added while building: the OpenAI SDK's `models.retrieve` calls it. |
 | `GET /livez` | 200 while the process runs. |
-| `GET /readyz` | 200 once the configuration is loaded and the listener is open; 503 while shutting down. |
+| `GET /readyz` | 200 once the configuration is loaded and the listener is open; 503 during a stop's `drain_delay`. |
 
 Every error, the gateway's own included, has OpenAI's error shape, so SDKs read it like any other API error:
 
@@ -118,7 +118,10 @@ no target is left does the client see them.
 - Upstream: each provider has a `timeout` (default 60 s) covering connecting, sending, the provider's thinking and
   reading the whole answer. A model that writes 4,000 tokens at 50 a second needs 80 s, so the default is a choice
   per provider, not a law.
-- Shutdown on SIGINT or SIGTERM: `/readyz` turns 503, the listener closes, and requests in flight get
+- Shutdown on SIGINT or SIGTERM: `/readyz` turns 503 and, for `drain_delay` (default 0), the gateway keeps serving
+  everything else, so a load balancer that polls `/readyz` stops sending before the port closes. (Without the delay
+  nobody can see that 503: Shutdown closes the listener and the idle connections in the same instant, and a probe
+  gets "connection refused"; found in the day-1 review.) Then the listener closes, and requests in flight get
   `shutdown_grace` (default 10 s). Then every request context is cancelled (they all derive from the server's
   `BaseContext`) with the cause `gateway.ErrShutdown`, which cancels their upstream requests; each request still
   running sees the cause and answers 503 `shutting_down` instead of being taken for a client that left; they get one
@@ -129,7 +132,11 @@ no target is left does the client see them.
   kernel finished its handshake, the client may even have written its request, but the server never accepted it.
   The mock's stop test first waited only for the client to write, and saw exactly that. So a request that arrives
   at the moment of a stop can fail with a reset rather than a 503; clients retry it like any connection error.
-  Draining at a load balancer (fail `/readyz`, wait, then stop) is the usual cure, and out of scope here.
+  Draining (`drain_delay` with a load balancer that polls `/readyz`) is the cure; with no balancer in front, a client
+  retries the reset like any connection error.
+- A second SIGINT or SIGTERM ends the process at once, mid-drain or mid-grace: after the first, `main` gives signals
+  back their default handling (`NotifyContext` would otherwise catch every later one until `main` returned; a
+  suspicion of the day-1 review, `TestASecondSignalEndsTheProcessAtOnce` runs the real binary to check it).
 
 ## Connections to providers
 
