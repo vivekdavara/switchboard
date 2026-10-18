@@ -208,8 +208,8 @@ One agent reviewed the code at `07b8b14` for 16 minutes and reproduced eight def
 200s (gateway and mock), `base_url` secrets in error messages, `max_response_bytes` at `math.MaxInt64` overflowing
 `limit+1` (every answer a 502), the mock's `Close` comment promising what it didn't do and its hang band moving with
 the error rate, and `/readyz`'s 503 being unobservable. Its suspicions gave three more fixes (DNS rebinding, keys
-with control characters, the swallowed second Ctrl-C) and its list of mechanisms it could break without a test
-failing gave five new tests and four new cases or checks in existing ones. Each fix is a commit that says "found in review".
+with control characters, the swallowed second Ctrl-C) and its list of ten mechanisms it could break without a
+test failing gave five new tests and five new cases or checks in existing ones. Each fix is a commit that says "found in review".
 A second, narrower review of only the code written since found that my fixes had gaps of their own: the new `Host`
 check refused HTTP/1.0 health probes (no `Host` at all) and IPv6 written out in full, `allowed_hosts` refused Docker
 Compose's underscore names, and `api_key_env`'s errors printed a key pasted into it, the very thing the `base_url`
@@ -226,9 +226,9 @@ Mutation checks by hand: remove or break a mechanism, run the tests, restore. 46
 allowlist, the redirect rule, the 401 rule, the content-type and `Host` checks, the timeouts, both limits at both
 edges, the shutdown steps and the signals, the case rules, the mock's draws and others. One mutant reading one byte
 past the limit survived because it's equivalent (the size check still catches the overrun), so I counted it out
-rather than writing a test for it. The reviews found the gaps I'd missed: nine mechanisms the first could break with
-every test still passing, five the second could and three the third could, each covered now; one survivor is
-named in README "Tests".
+rather than writing a test for it. The reviews found the gaps I'd missed: ten mechanisms the first could break with
+every test still passing, five the second could and four the third could; all but one are covered now, and that
+survivor is named in README "Tests".
 
 **What did you find while building it?**
 Three things. The mock's stop test first waited for the client to write its request and then stopped the server;
