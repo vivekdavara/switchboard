@@ -8,7 +8,8 @@
 // it names. Logs are JSON lines on stderr: one per chat completion, one per request refused for its Host, and the
 // server's own. A usage error exits 2; a configuration that doesn't load or a port that won't open exits 1; a stop by
 // SIGINT or SIGTERM exits 0, whether or not every request finished in the grace, and a second signal during the stop
-// ends the process at once, by that signal.
+// ends the process at once, by that signal (or with exit status 130 if SIGINT was ignored when it started). Two
+// identical signals sent back to back can merge into one before any code sees them; DESIGN.md has why.
 package main
 
 import (

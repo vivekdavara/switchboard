@@ -135,8 +135,8 @@ deadline *with handlers still running*, so then the base context every request d
 cause `gateway.ErrShutdown`; each running request cancels its provider request, sees the cause, and answers 503
 `shutting_down` (one still reading a slow body is woken by a read deadline); they get a second to write it, and the
 server closes. `TestARequestStillRunningAfterTheGraceGetsA503` checks the client gets that 503; removing any step
-of the sequence (the cancel, the cause, the second to write) fails it in 3 of 3 runs. A second signal at any point
-ends the process at once.
+of the sequence (the cancel, the cause, the second to write) fails it in 3 of 3 runs. A second signal, of the other
+kind or the same one after the first was taken, ends the process at once.
 
 **What is `drain_delay` for?**
 Telling a load balancer to stop sending before the port closes. On a stop, `/readyz` turns 503, but `Shutdown`
@@ -222,12 +222,13 @@ redirects. Then the official OpenAI Python SDK against the real binaries (`scrip
 completion, the headers, unknown parameters passing through, and the SDK's own exceptions for 404 and 400.
 
 **How do you know the tests test anything?**
-Mutation checks by hand: remove or break a mechanism, run the tests, restore. 43 mechanisms, each caught: the header
+Mutation checks by hand: remove or break a mechanism, run the tests, restore. 46 mechanisms, each caught: the header
 allowlist, the redirect rule, the 401 rule, the content-type and `Host` checks, the timeouts, both limits at both
 edges, the shutdown steps and the signals, the case rules, the mock's draws and others. One mutant reading one byte
 past the limit survived because it's equivalent (the size check still catches the overrun), so I counted it out
 rather than writing a test for it. The reviews found the gaps I'd missed: nine mechanisms the first could break with
-every test still passing, and five the second could, each covered now.
+every test still passing, five the second could and three the third could, each covered now; one survivor is
+named in README "Tests".
 
 **What did you find while building it?**
 Three things. The mock's stop test first waited for the client to write its request and then stopped the server;

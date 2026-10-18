@@ -887,3 +887,34 @@ func TestABodyStillArrivingAtTheStopGetsA503(t *testing.T) {
 		t.Errorf("the provider got %d requests", n)
 	}
 }
+
+// Tests for what the day-1 third review could break with every test passing: the allowance for a request with no
+// Host on the API paths (the second review's test only tried /readyz, which is exempt anyway), and the health
+// exemption matching its two paths exactly.
+func TestNoHostIsAllowedOnTheAPIToo(t *testing.T) {
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	srv, _, _ := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small")
+	raw := "POST /v1/chat/completions HTTP/1.0\r\nContent-Type: application/json\r\n" +
+		"Content-Length: " + fmt.Sprint(len(ask)) + "\r\n\r\n" + ask
+	resp, body := rawExchange(t, srv, raw, false)
+	if resp == nil || resp.StatusCode != 200 || !strings.Contains(body, "This is mock-a") {
+		t.Errorf("an HTTP/1.0 completion without a Host: %v %s", resp, body)
+	}
+}
+
+func TestOnlyTheTwoHealthPathsAreExempt(t *testing.T) {
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	srv, _, _ := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small")
+	for _, path := range []string{"/v1/models/livez", "/v1/models/readyz", "/livez/", "/readyz/x", "/x/livez"} {
+		req, _ := http.NewRequest("GET", srv.URL+path, nil)
+		req.Host = "attacker.example"
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 403 {
+			t.Errorf("GET %s from a foreign host: %d, want 403", path, resp.StatusCode)
+		}
+	}
+}

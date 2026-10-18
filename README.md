@@ -223,7 +223,7 @@ into failures or hangs.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (82 test and fuzz functions, about 6 s);
+`make check` runs gofmt, `go vet` and `go test -race` over every package (85 test and fuzz functions, about 6 s);
 CI runs the same on Ubuntu 24.04, then `make demo`'s script with the SDK checks as a second job.
 
 | Package | What the tests pin down |
@@ -235,12 +235,14 @@ CI runs the same on Ubuntu 24.04, then `make demo`'s script with the SDK checks 
 | `gateway` | a forward with only `model` rewritten and only the allowlisted headers; the `Host` allowlist (any spelling of an address, no `Host` at all, the health endpoints exempt, refusals logged); every refusal before forwarding, the request limit at exactly its boundary, a 408 for a slow body, a 503 for a body still arriving at the stop; every row of the mapping table with a misbehaving provider; the response limit at exactly its boundary; timeouts (no answer, a trickled body); unreachable and cut-off providers; a client that leaves or half-closes (never an empty 200); the shutdown 503; a forwarded request never resent; HTTP/2 to an https provider; the pool keeping its connections; the log line's facts and absences; 64 concurrent requests |
 | `cmd/...` | serving, readiness and a clean stop; the drain (`/readyz` 503 while still answering); a request finishing within the grace; one still running after it getting a 503; a second signal ending the real binary at once; the server's timeouts; usage errors and exit codes |
 
-Mutation checks, run by hand: 43 mechanisms removed or broken one at a time, and each made a test fail: 24 in the
-gateway (the header allowlist, the redirect rule, the 401 rule, the content type, the `Host` check and its
-exemptions and log, both limits at both edges, the timeouts, the pool, never resending, waking a slow body at the
-stop...), 7 in the stop sequence and the signals, 3 in the configuration's errors and host rules, 3 in parsing and
-the case rules, 6 in the mock. Two more didn't count: one didn't build, and reading one byte more than the response
-limit changes nothing (the size check still catches it). The commit messages list them.
+Mutation checks, run by hand: 46 mechanisms removed or broken one at a time, and each made a test fail: 26 in the
+gateway (the header allowlist, the redirect rule, the 401 rule, the content type, the `Host` check with its
+allowance for no `Host`, its exact health exemption and its log, both limits at both edges, the timeouts, the pool,
+never resending, waking a slow body at the stop...), 8 in the stop sequence and the signals, 3 in the
+configuration's errors and host rules, 3 in parsing and the case rules, 6 in the mock. One is known to survive: the
+signal channel's buffer of 2 rather than 1, a defence for an interleaving no test can force. Two more didn't count:
+one didn't build, and reading one byte more than the response limit changes nothing (the size check still catches
+it). The commit messages list them; the three reviews found the gaps in the first counts.
 
 ## Design decisions
 
