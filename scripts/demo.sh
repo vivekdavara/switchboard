@@ -29,11 +29,15 @@ pids+=($mock_b)
 bin/switchboard serve -config configs/local.json 2>run/switchboard.log &
 pids+=($!)
 
-for _ in $(seq 100); do
-  curl -sf "$GATEWAY/readyz" >/dev/null 2>&1 && break
-  sleep 0.1
+# Wait for all three, not just the gateway: it gets ready without asking its providers, and a request sent before a
+# mock listens gets a 502 (it happened: the gateway listened 200 ms before a freshly built mock did).
+for url in "$GATEWAY/readyz" http://127.0.0.1:8118/livez http://127.0.0.1:8119/livez; do
+  for _ in $(seq 100); do
+    curl -sf "$url" >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+  curl -sf "$url" >/dev/null || { echo "$url never answered"; cat run/*.log; exit 1; }
 done
-curl -sf "$GATEWAY/readyz" >/dev/null || { echo "the gateway never got ready"; cat run/*.log; exit 1; }
 
 failures=0
 # check NAME WANT_STATUS WANT_TEXT CURL_ARGS...: one request, its status and a piece of its body.
