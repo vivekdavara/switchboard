@@ -684,7 +684,9 @@ func TestAShutdownCancellationIsA503(t *testing.T) {
 	srv.Start()
 	defer srv.Close()
 	go func() {
-		for len(up.requests()) == 0 {
+		// Stop once the provider holds the request (or after 10 s, so a request that never got there fails the
+		// assertions below instead of hanging the test).
+		for deadline := time.Now().Add(10 * time.Second); len(up.requests()) == 0 && time.Now().Before(deadline); {
 			time.Sleep(time.Millisecond)
 		}
 		stop(ErrShutdown)

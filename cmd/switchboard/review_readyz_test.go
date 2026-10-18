@@ -23,7 +23,10 @@ func TestReviewReadyzIs503WhileDraining(t *testing.T) {
 	addr, stop, code := start(t, writeDrainingConfig(t, up.URL, "2s", "1s"), logs)
 	began := time.Now()
 	stop()
-	for !strings.Contains(logs.String(), `"msg":"draining"`) {
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(logs.String(), `"msg":"draining"`); {
+		if time.Now().After(deadline) {
+			t.Fatalf("no draining line:\n%s", logs)
+		}
 		time.Sleep(time.Millisecond)
 	}
 	resp, err := http.Get("http://" + addr + "/readyz")

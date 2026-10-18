@@ -109,7 +109,7 @@ gateway's key is wrong; an SDK given 401 tells its user that *their* key is wron
 | answers any other status (5xx, 3xx, other 4xx; Go's client handles 1xx itself) | 502, code `upstream_error`, naming the status |
 | answers 200 without a JSON object | 502, code `upstream_error` |
 | answers more than `max_response_bytes` (16 MiB), whatever the status | 502, code `upstream_error` (the status is in the log) |
-| can't be reached (refused, reset, DNS) | 502, code `upstream_unavailable` |
+| can't be reached (refused, reset, DNS), or breaks off mid-answer | 502, code `upstream_unavailable` |
 | hasn't finished answering within the provider's `timeout` | 504, code `upstream_timeout` |
 
 If the client goes away first, its request's context is cancelled, which cancels the upstream request too; the log

@@ -141,9 +141,7 @@ func TestAStopLetsARequestInFlightFinishWithinTheGrace(t *testing.T) {
 		status, body, err := chat(addr)
 		result <- fmt.Sprint(status, " ", err, " ", len(body) > 0)
 	}()
-	for p.Stats().Requests == 0 {
-		time.Sleep(time.Millisecond)
-	}
+	waitUntil(t, "the request to reach the provider", func() bool { return p.Stats().Requests > 0 })
 	stop()
 	if got := <-result; got != "200 <nil> true" {
 		t.Errorf("the request in flight got %s", got)
@@ -170,9 +168,7 @@ func TestARequestStillRunningAfterTheGraceGetsA503(t *testing.T) {
 		status, body, err := chat(addr)
 		done <- result{status, body, err}
 	}()
-	for p.Stats().Hung == 0 {
-		time.Sleep(time.Millisecond)
-	}
+	waitUntil(t, "the request to hang", func() bool { return p.Stats().Hung > 0 })
 	began := time.Now()
 	stop()
 	r := <-done
@@ -297,5 +293,16 @@ func TestTheServerHasItsTimeoutsAndNoWriteTimeout(t *testing.T) {
 	}
 	if srv.BaseContext(nil) != base {
 		t.Error("requests don't derive from the base context")
+	}
+}
+
+// waitUntil polls cond until it holds, failing the test after 10 s rather than leaving it to go test's timeout.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); !cond(); {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
