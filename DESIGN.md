@@ -186,7 +186,8 @@ A null is an error too, not "the default".
 
 - `allowed_hosts` lists the names the `Host` header may hold (step 0); `["*"]` allows any, for a gateway behind a
   proxy that checks hosts itself. Names may hold `_` (Docker Compose's service names do); addresses are kept in one
-  spelling. An empty list, a port or brackets in an entry are errors.
+  spelling. An entry must be `*`, an IP address, or a name of letters, digits, `.`, `-` and `_` that starts and
+  ends with a letter, digit or `_`: so an empty list, a port, brackets, a trailing dot or a slash are errors.
 - `listen` defaults to `127.0.0.1:8108`. Until day 3 brings client keys, anyone who can reach the port can spend the
   providers' keys, so the default is loopback only.
 - A provider's key is never in the file: `api_key_env` names an environment variable, which must be set and
@@ -240,7 +241,7 @@ As built on day 1, beyond that plan:
 - Two fuzz tests: `FuzzParseObjectAgreesWithItsOwnOutput` (every accepted body rebuilds from its members to the same
   members) and `FuzzRewriteKeepsTheMeaning` (every accepted body's rewrite is read by encoding/json, as a Go
   provider would read it, with the model the gateway routed, the same stream flag and the same roles). Their seeds
-  run in every `go test`; `make fuzz` runs the first for a minute.
+  run in every `go test`; `make fuzz` runs each for a minute.
 - The smoke test (`scripts/demo.sh`, `make demo`) checks eight requests with curl and eight with the official OpenAI
   Python SDK (`scripts/sdk_check.py`, the version pinned in `scripts/requirements-sdk.txt`): the SDK's own
   exceptions for the gateway's 404 and 400 are part of what "compatible" means.

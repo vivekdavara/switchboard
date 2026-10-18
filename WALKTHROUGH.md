@@ -129,28 +129,34 @@ deferred log line still runs (`review_empty200_test.go`).
 ## Running it
 
 **How does shutdown work?**
-`serve` turns `/readyz` to 503, then `http.Server.Shutdown` closes the listener and waits up to the grace for
-requests in flight. Shutdown returns at its deadline *with handlers still running*, so then the base context every
-request derives from is cancelled with the cause `gateway.ErrShutdown`; each running request cancels its provider
-request, sees the cause, and answers 503 `shutting_down`; they get a second to write it, and the server closes.
-`TestARequestStillRunningAfterTheGraceGetsA503` checks the client gets that 503; removing any step of the sequence
-(the cancel, the cause, the second to write) fails it in 3 of 3 runs.
+In steps. `serve` turns `/readyz` to 503 and keeps serving for `drain_delay` (0 by default; next question). Then
+`http.Server.Shutdown` closes the listener and waits up to the grace for requests in flight. Shutdown returns at its
+deadline *with handlers still running*, so then the base context every request derives from is cancelled with the
+cause `gateway.ErrShutdown`; each running request cancels its provider request, sees the cause, and answers 503
+`shutting_down` (one still reading a slow body is woken by a read deadline); they get a second to write it, and the
+server closes. `TestARequestStillRunningAfterTheGraceGetsA503` checks the client gets that 503; removing any step
+of the sequence (the cancel, the cause, the second to write) fails it in 3 of 3 runs. A second signal at any point
+ends the process at once.
 
 **What is `drain_delay` for?**
 Telling a load balancer to stop sending before the port closes. On a stop, `/readyz` turns 503, but `Shutdown`
 closes the listener in the same instant, so the first version's 503 could never be seen: a probe got "connection
 refused" (found in review). With `drain_delay`, the gateway keeps serving everything for that long with `/readyz` at
-503, then closes. It defaults to 0 because there's no balancer in front of a laptop. A second Ctrl-C ends the process
-at once, mid-drain or mid-grace: on the first, `main` gives signals back their default handling, then starts the
-stop (`TestASecondSignalEndsTheProcessAtOnce` runs the real binary).
+503, then closes. It defaults to 0 because there's no balancer in front of a laptop. `/livez` and `/readyz` answer
+any `Host`, since a balancer probes by address. A second Ctrl-C ends the process at once, mid-drain or mid-grace:
+`main` keeps receiving signals after the first and raises the second again with the default handling, so the
+process dies by it (two tests run the real binary).
 
 **Tell me about a test that passed locally and failed in CI.**
-That one. My first version handed signals back in a goroutine woken by the same cancelled context as the stop. It
-passed 20 of 20 runs on my laptop and failed once on a 2-CPU CI runner: the drain started and logged, the test sent
-its second signal, and the hand-back hadn't run yet, so the signal was swallowed. To show it was that window and not
-something else, I put a 100 ms delay at that point: the old order failed 3 of 3, the new order (reset the signals,
-then cancel) passed 3 of 3. The lesson: "after X happens" across two goroutines is not an order; do the two things
-in sequence in one.
+That one, and it took three tries. My first version handed signals back in a goroutine woken by the same cancelled
+context as the stop. It passed 20 of 20 runs on my laptop and failed once on a 2-CPU CI runner: the drain started and
+logged, the test sent its second signal, and the hand-back hadn't run yet, so the signal was swallowed. A 100 ms delay
+at that point showed the window: 3 of 3 failures. My second version reset the signals first, then cancelled; it
+survived that delay, but the second review sent the two signals back to back and it swallowed the second 10 times in
+10 (3 in 10 after I buffered two): a signal still pending inside the Go runtime when `signal.Reset` runs is dropped.
+The third keeps receiving after the first signal and, when a second comes, resets and raises it again; 20 of 20 runs
+of both tests, with 8 CPUs and with 2. Lessons: "after X happens" across two goroutines is not an order; and turning
+a mechanism off is itself an event that something can arrive in the middle of.
 
 **Why loopback by default?**
 There are no client keys until day 3, so anyone who can reach the port can spend the providers' keys. The default
