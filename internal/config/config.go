@@ -97,6 +97,8 @@ var (
 	// Provider names go into a response header, so they keep to characters any header value can hold.
 	providerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 	envName      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	// conventionalEnvName is how variables are named by convention, and how no provider's key looks.
+	conventionalEnvName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
 )
 
 // Parse checks a configuration file's contents, taking provider keys from getenv.
@@ -246,18 +248,26 @@ func parseProvider(raw json.RawMessage, getenv func(string) string) (*Provider, 
 		}
 	}
 	if p.APIKeyEnv != "" {
+		// api_key_env is where a key is likeliest to be pasted by mistake, so its errors show the value only when it
+		// looks like a variable's name by convention, in capitals: sk-proj-... and gsk_... never do (found in the
+		// day-1 second review: both were printed whole).
+		shown := "named in api_key_env (not shown: it isn't in capitals, so it may be a pasted key)"
+		if conventionalEnvName.MatchString(p.APIKeyEnv) {
+			shown = p.APIKeyEnv + " (api_key_env)"
+		}
 		if !envName.MatchString(p.APIKeyEnv) {
-			return nil, fmt.Errorf("api_key_env %q is not an environment variable's name", p.APIKeyEnv)
+			return nil, errors.New("api_key_env isn't an environment variable's name (not shown: it may be a " +
+				"pasted key); name the variable that holds the key, such as OPENAI_API_KEY")
 		}
 		if p.APIKey = getenv(p.APIKeyEnv); p.APIKey == "" {
-			return nil, fmt.Errorf("the environment variable %s (api_key_env) is unset or empty", p.APIKeyEnv)
+			return nil, fmt.Errorf("the environment variable %s is unset or empty", shown)
 		}
 		// A key goes into a header, where a space or a control character either breaks the request (net/http
 		// refuses it, and every request then looked like an unreachable provider, a suspicion of the day-1 review
 		// confirmed with a trailing \r) or changes the key. The usual cause is a line ending from a .env file.
 		if strings.IndexFunc(p.APIKey, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
-			return nil, fmt.Errorf("the environment variable %s (api_key_env) holds a space or a control "+
-				"character (a line ending from a .env file?); no key does", p.APIKeyEnv)
+			return nil, fmt.Errorf("the environment variable %s holds a space or a control character (a line "+
+				"ending from a .env file?); no key does", shown)
 		}
 	}
 	return p, nil
