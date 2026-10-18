@@ -1,4 +1,4 @@
-.PHONY: build check fuzz lint test
+.PHONY: build check demo fuzz lint test
 
 # What CI runs.
 check: lint test
@@ -16,3 +16,7 @@ build:
 # A minute of fuzzing the strict JSON reader (its seeds run in every make test).
 fuzz:
 	go test -run '^$$' -fuzz FuzzParseObject -fuzztime 60s ./internal/jsonstrict
+
+# The real binaries: two mock providers and the gateway on 8108/8118/8119, eight requests checked (CI's smoke job).
+demo:
+	scripts/demo.sh
