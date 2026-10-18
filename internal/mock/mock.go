@@ -118,7 +118,9 @@ func New(cfg Config) (*Provider, error) {
 func (p *Provider) ServeHTTP(w http.ResponseWriter, r *http.Request) { openai.Serve(p.mux, w, r) }
 
 // Close drops the connection of every request the provider is holding (hung, or waiting out its latency), at once,
-// as a provider that dies would. Requests that come later are still served; Close is for shutting down.
+// as a provider that dies would, and of every later request that gets as far as waiting. Close is for shutting
+// down; to take a provider down in a test, stop its server. (Its comment used to promise that later requests were
+// still served, which they never were; found in the day-1 review.)
 func (p *Provider) Close() { p.once.Do(func() { close(p.stop) }) }
 
 // Stats returns the counts so far.
@@ -136,8 +138,9 @@ type fate struct {
 }
 
 // draw takes the next request's fate from the RNG. It always takes four numbers, whatever the fate, so the n-th
-// request gets the same numbers at any error rate: with the same seed, raising the rate turns more answers into
-// failures without reshuffling the rest, and runs at different rates compare request for request.
+// request gets the same numbers at any rates: with the same seed, raising the error rate turns more answers into
+// failures and raising the hang rate turns more answers into hangs, without reshuffling the rest, and runs at
+// different rates compare request for request.
 func (p *Provider) draw() fate {
 	p.mu.Lock()
 	u, f1, f2 := p.rng.Float64(), p.rng.Float64(), p.rng.Float64()
@@ -145,8 +148,11 @@ func (p *Provider) draw() fate {
 	p.mu.Unlock()
 	j := p.cfg.Jitter
 	return fate{
+		// Failures take the bottom of [0, 1) and hangs the top, so raising either rate only takes answers from the
+		// middle (the rates add up to at most 1, so the bands never meet). With hangs right above the failures, a
+		// higher error rate moved the hang band and reshuffled hangs and answers (found in the day-1 review).
 		fail:      u < p.cfg.ErrorRate,
-		hang:      u >= p.cfg.ErrorRate && u < p.cfg.ErrorRate+p.cfg.HangRate,
+		hang:      u >= 1-p.cfg.HangRate,
 		ttftF:     1 + j*(2*f1-1),
 		perTokenF: 1 + j*(2*f2-1),
 	}

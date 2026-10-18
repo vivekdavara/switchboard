@@ -182,7 +182,10 @@ deterministic given its seed, so a test can say exactly what it will answer.
   default, each scaled by a random factor in `[1-j, 1+j]` with `-jitter j`. An answer of 32 words takes about 360 ms.
 - **Errors.** `-error-rate p` answers a fraction p of requests with `-error-status` (500 by default) and an OpenAI
   error body, before any delay; `-hang-rate p` never answers a fraction p, until the client gives up. The draws come
-  from one RNG seeded with `-seed`, so a run's sequence of outcomes is fixed.
+  from one RNG seeded with `-seed`, four per request whatever the fate, so a run's sequence of outcomes is fixed.
+  Failures take the bottom of the draw's range and hangs the top, so raising either rate only turns answers into
+  that outcome, and runs at several rates compare request for request (the first version put the hangs right above
+  the failures, which moved them when the error rate rose; found in the day-1 review).
 - **Checks.** It refuses what OpenAI refuses on the fields it reads (no model, no messages) with OpenAI's error
   shape, and with `-api-key-env NAME` it wants `Authorization: Bearer` with that variable's value.
 

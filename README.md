@@ -167,7 +167,8 @@ names it, not a silent default.
 user message, padded to `-completion-tokens` words (it counts a word as a token). Its latency is `-ttft` plus
 `-per-token` for each word, scaled by `-jitter`. It fails a fraction `-error-rate` of requests with
 `-error-status`, and never answers a fraction `-hang-rate`. Every fate comes from a PCG seeded with `-seed`, four
-draws per request whatever the outcome, so a run is reproducible and a higher error rate only adds failures.
+draws per request whatever the outcome, so a run is reproducible, and a higher error or hang rate only turns answers
+into failures or hangs.
 
 ## Tests
 

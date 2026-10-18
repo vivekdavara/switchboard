@@ -16,7 +16,7 @@ import (
 //
 // Run: go test -race -count=1 -run TestReviewAMalformedBodyIsNotAnEmpty200 -v ./internal/mock
 func TestReviewAMalformedBodyIsNotAnEmpty200(t *testing.T) {
-	_, srv := start(t, fast())
+	p, srv := start(t, fast())
 	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -33,5 +33,8 @@ func TestReviewAMalformedBodyIsNotAnEmpty200(t *testing.T) {
 	resp.Body.Close()
 	if _, code, _ := apiError(t, b); resp.StatusCode != 400 || code != "invalid_body" {
 		t.Errorf("a malformed chunked body got %d %q, want 400 invalid_body", resp.StatusCode, b)
+	}
+	if s := p.Stats(); s.Requests != 1 || s.Refused != 1 {
+		t.Errorf("stats %+v, want it counted as refused", s)
 	}
 }

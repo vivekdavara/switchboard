@@ -411,6 +411,75 @@ func TestARaisedErrorRateOnlyAddsFailures(t *testing.T) {
 	}
 }
 
+// fatesAt draws n fates at the given rates with seed 7, without serving anything.
+func fatesAt(t *testing.T, errorRate, hangRate float64, n int) []string {
+	t.Helper()
+	cfg := fast()
+	cfg.ErrorRate, cfg.HangRate, cfg.Seed = errorRate, hangRate, 7
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for range n {
+		switch f := p.draw(); {
+		case f.fail:
+			out = append(out, "fail")
+		case f.hang:
+			out = append(out, "hang")
+		default:
+			out = append(out, "answer")
+		}
+	}
+	return out
+}
+
+func TestARaisedHangRateOnlyAddsHangs(t *testing.T) {
+	low, high := fatesAt(t, 0.2, 0.1, 1000), fatesAt(t, 0.2, 0.5, 1000)
+	more := 0
+	for i := range low {
+		if low[i] != high[i] {
+			if low[i] != "answer" || high[i] != "hang" {
+				t.Fatalf("request %d: %s at hang rate 0.1, %s at 0.5", i, low[i], high[i])
+			}
+			more++
+		}
+	}
+	if more < 300 || more > 500 { // about 400 of 1,000 move from answers to hangs
+		t.Errorf("%d requests moved from answers to hangs", more)
+	}
+}
+
+func TestCloseReleasesARequestWaitingOutItsLatency(t *testing.T) {
+	cfg := fast()
+	cfg.TTFT = time.Minute
+	p, srv := start(t, cfg)
+	errc := make(chan error, 1)
+	go func() {
+		resp, err := srv.Client().Post(srv.URL+"/v1/chat/completions", "application/json",
+			strings.NewReader(hello+`}`))
+		if err == nil {
+			resp.Body.Close()
+			err = errors.New("got a response: " + resp.Status)
+		}
+		errc <- err
+	}()
+	waitFor(t, func() bool { return p.Stats().Requests == 1 })
+	time.Sleep(20 * time.Millisecond) // into the minute's wait
+	p.Close()
+	select {
+	case err := <-errc:
+		if !strings.Contains(err.Error(), "EOF") {
+			t.Errorf("got %v, want the connection dropped", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close didn't release a request waiting out its latency")
+	}
+	if s := p.Stats(); s.Abandoned != 1 {
+		t.Errorf("stats %+v", s)
+	}
+}
+
 func TestAnInjected429IsARateLimitError(t *testing.T) {
 	cfg := fast()
 	cfg.ErrorRate, cfg.ErrorStatus = 1, 429
