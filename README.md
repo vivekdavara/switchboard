@@ -42,7 +42,8 @@ flowchart LR
 ## Quick start
 
 Go 1.27 and curl. `make demo` builds everything, starts two mock providers and the gateway, sends eight requests
-through it, checks each answer, and stops everything:
+through it with curl (and eight more with the OpenAI Python SDK, if it is installed), checks each answer, and stops
+everything:
 
 ```bash
 make demo
@@ -202,9 +203,8 @@ which the gateway uses for https providers, one connection carries many requests
 ```
 
 Other settings: `max_request_bytes` (default 4 MiB), `max_response_bytes` (16 MiB; both at most 1 GiB),
-`drain_delay` (default 0: how long a stopping gateway keeps serving with `/readyz` at 503), `allowed_hosts`
-(default the loopback names; `["*"]` for any), a provider's `timeout`
-(default 60 s) and `api_key_env`. **No key is ever in a file:** `api_key_env` names the environment variable that
+`drain_delay` (default 0: how long a stopping gateway keeps serving with `/readyz` at 503), `allowed_hosts` (default
+the loopback names; `["*"]` for any), and per provider `timeout` (default 60 s) and `api_key_env`. **No key is ever in a file:** `api_key_env` names the environment variable that
 holds it, and the gateway refuses to start if it is unset. A live provider is opt-in:
 `configs/openai.example.json` routes `gpt-4o-mini` to OpenAI with the key from `OPENAI_API_KEY`. Tests and CI use
 the mocks only and need no key.
@@ -223,22 +223,23 @@ into failures or hangs.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package; CI runs the same on Ubuntu 24.04, then
-`make demo`'s script with the SDK checks as a second job.
+`make check` runs gofmt, `go vet` and `go test -race` over every package (76 test and fuzz functions, about 6 s);
+CI runs the same on Ubuntu 24.04, then `make demo`'s script with the SDK checks as a second job.
 
 | Package | What the tests pin down |
 |---|---|
 | `jsonstrict` | members in order and byte for byte; repeated keys at any depth (also after unescaping); invalid UTF-8; anything but one object; the depth limit; a fuzz test that every accepted body rebuilds to itself |
 | `openai` | the acted-on fields and every way they can be wrong; keys equal to them only when case is ignored (including `ſ` for `s`), at the top level, in messages and in parts; the rewrite leaves every other byte alone; a fuzz test that a Go provider reads the forwarded body as the gateway did; the error envelope |
 | `config` | the checked-in configs load; defaults; 44 kinds of mistake, each refused with its name; no key, and nothing of a `base_url`, in any error |
-| `mock` | exact answers and usage; `max_tokens` and `n`; validation; the key; latency lower bounds; jitter bounds; the same seed gives the same run and a higher error rate only adds failures; `Close` drops held requests |
-| `gateway` | a forward with only `model` rewritten and only the allowlisted headers; every refusal before forwarding; every row of the mapping table with a misbehaving provider; the response limit at exactly its boundary; timeouts (no answer, a trickled body); unreachable and cut-off providers; a client that leaves; the shutdown 503; the log line's facts and absences; 64 concurrent requests |
-| `cmd/...` | serving, readiness and a clean stop; a request finishing within the grace; one still running after it getting a 503; usage errors and exit codes |
+| `mock` | exact answers and usage; `max_tokens` and `n`; validation; the key; latency lower bounds; jitter bounds; the same seed gives the same run, and a higher error or hang rate only adds failures or hangs; `Close` drops held and later requests; an unreadable body is a 400 |
+| `gateway` | a forward with only `model` rewritten and only the allowlisted headers; the `Host` allowlist; every refusal before forwarding, the request limit at exactly its boundary, a 408 for a slow body; every row of the mapping table with a misbehaving provider; the response limit at exactly its boundary; timeouts (no answer, a trickled body); unreachable and cut-off providers; a client that leaves or half-closes (never an empty 200); the shutdown 503; a forwarded request never resent; HTTP/2 to an https provider; the pool keeping its connections; the log line's facts and absences; 64 concurrent requests |
+| `cmd/...` | serving, readiness and a clean stop; the drain (`/readyz` 503 while still answering); a request finishing within the grace; one still running after it getting a 503; a second signal ending the real binary at once; the server's timeouts; usage errors and exit codes |
 
-Mutation checks, run by hand: 19 mechanisms removed or broken one at a time (14 in the gateway, 4 in the stop
-sequence, 1 in the mock's draws), and each made a test fail. Two more didn't count: one didn't build, and reading
-one byte more than the response limit changes nothing (the size check still catches it). The commit messages list
-them.
+Mutation checks, run by hand: 35 mechanisms removed or broken one at a time, and each made a test fail: 21 in the
+gateway (the header allowlist, the redirect rule, the 401 rule, the content type, the `Host` check, both limits at
+both edges, the timeouts, the pool, never resending...), 7 in the stop sequence and the signals, 3 in parsing and
+the case rules, 4 in the mock. Two more didn't count: one didn't build, and reading one byte more than the response
+limit changes nothing (the size check still catches it). The commit messages list them.
 
 ## Design decisions
 
