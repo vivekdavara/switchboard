@@ -4,9 +4,10 @@ The questions an interviewer is likely to ask about this project, with short ans
 README.md first; DESIGN.md has the full reasoning. Each day adds a section.
 
 **Reading order for day 1:** DESIGN.md "A chat completion, step by step" and "Mapping the provider's answer";
-`internal/gateway/gateway.go` (`chat`, `forward`, `failUpstream`); `internal/jsonstrict/jsonstrict.go`;
-`internal/openai/request.go` (`ParseChatRequest`, `caseVariant`, `WithModel`); `cmd/switchboard/main.go`
-(`serve`); `internal/mock/mock.go` (`draw`, `chatCompletions`). Then the tests named below.
+`internal/gateway/gateway.go` (`ServeHTTP` and `hostAllowed`, `chat`, `forward`, `failUpstream`);
+`internal/jsonstrict/jsonstrict.go`; `internal/openai/request.go` (`ParseChatRequest`, `caseVariant`,
+`WithModel`); `cmd/switchboard/main.go` (`main`, `serve`); `internal/mock/mock.go` (`draw`, `chatCompletions`).
+Then the tests named below, and the `review_*_test.go` files, each of which starts with the bug it found.
 
 ## The project (day 1)
 
@@ -58,6 +59,14 @@ the same stream flag and the same roles. Its first run found a gap in the harnes
 with invalid UTF-8 comes back as U+FFFD, and models only come from the configuration, which is valid UTF-8 by
 construction, so the precondition is documented.
 
+**What's DNS rebinding, and why does the gateway check `Host`?**
+A page on `attacker.example` gets its DNS answer changed to 127.0.0.1 after it loads. The browser still thinks it is
+talking to `attacker.example`, so requests to `http://attacker.example:8108` are same-origin: no CORS, no preflight,
+the content-type rule doesn't stop them, and they land on the gateway. The one thing that gives them away is the
+`Host` header, which still says `attacker.example`. So `ServeHTTP` answers only `allowed_hosts` (by default
+`localhost`, `127.0.0.1`, `::1`) and everything else gets 403. The review suspected this; I confirmed a request with
+that Host got a 200 and reached the provider, before adding the check (`TestOnlyAllowedHostsAreAnswered`).
+
 **Why require `Content-Type: application/json`?**
 Browsers send "simple" cross-origin requests (form encodings and `text/plain`) without a CORS preflight, and a
 `text/plain` form can carry a valid JSON body. A gateway on localhost that holds provider keys would spend them for
@@ -89,9 +98,33 @@ Everything after routing: connecting, sending, the provider's thinking, and read
 and half a body and stops; the client still gets a 504 at the timeout. The default is 60 s and is set per provider:
 a long answer at 50 tokens a second needs more.
 
+**Can Go's HTTP client send your POST twice?**
+Yes, by itself, in one case: a reused connection breaks after the request was written, and the request is
+"replayable", which for a POST means it carries an `Idempotency-Key` or `X-Idempotency-Key` header (and a body it can
+rewind). A resent completion is billed twice. The gateway's upstream POSTs carry neither header.
+`TestAForwardedRequestIsNeverResentByTheTransport` has a provider answer once, then read the next request on the same
+connection and drop it: two requests in all, and a 502. With an `Idempotency-Key` added upstream the provider sees
+three. (If nothing was written before the connection broke, Go retries any request with a rewindable body; that's
+safe, the provider never saw it.)
+
+**Does the gateway speak HTTP/2 to providers?**
+To https ones, yes: `NewTransport` clones Go's default transport, and its `ForceAttemptHTTP2` keeps HTTP/2 on even
+with a TLS configuration of its own. `TestAnHTTPSProviderIsReachedOverHTTP2` checks the provider sees `HTTP/2.0`,
+and fails with that flag off. Over HTTP/2 one connection carries many requests, so the idle-pool numbers in README
+"Results" (taken over plain HTTP/1.1 to the mock) matter less for a real https provider.
+
 **What happens when the client disconnects?**
 Its request context is cancelled; the upstream request derives from it, so the provider's request is cancelled too
-(`TestAClientThatGoesAwayCancelsTheProvidersRequest` waits for the provider to see it). The log line says 499.
+(`TestAClientThatGoesAwayCancelsTheProvidersRequest` waits for the provider to see it). The log line says 499, and
+the handler drops the connection with `panic(http.ErrAbortHandler)` rather than returning without writing.
+
+**Why panic instead of just returning?**
+Because a handler that returns without writing gets `200 OK` with an empty body from net/http. The first version did
+exactly that, assuming nobody was listening, and the review showed two ways somebody was: a malformed chunked body
+(the read fails, the client is still there) and a client that half-closes its side after sending the request
+(net/http reports that as "gone", but it is still reading). Both got an empty 200, which an SDK would try to parse
+as a completion. Now an unreadable body is a 400 `invalid_body`, and a cancelled request drops the connection; the
+deferred log line still runs (`review_empty200_test.go`).
 
 ## Running it
 
@@ -103,13 +136,25 @@ request, sees the cause, and answers 503 `shutting_down`; they get a second to w
 `TestARequestStillRunningAfterTheGraceGetsA503` checks the client gets that 503; removing any step of the sequence
 (the cancel, the cause, the second to write) fails it in 3 of 3 runs.
 
+**What is `drain_delay` for?**
+Telling a load balancer to stop sending before the port closes. On a stop, `/readyz` turns 503, but `Shutdown`
+closes the listener in the same instant, so the first version's 503 could never be seen: a probe got "connection
+refused" (found in review). With `drain_delay`, the gateway keeps serving everything for that long with `/readyz` at
+503, then closes. It defaults to 0 because there's no balancer in front of a laptop. A second Ctrl-C ends the process
+at once, mid-drain or mid-grace: `main` gives signals back their default handling after the first
+(`TestASecondSignalEndsTheProcessAtOnce` runs the real binary).
+
 **Why loopback by default?**
 There are no client keys until day 3, so anyone who can reach the port can spend the providers' keys. The default
 listen address is `127.0.0.1:8108`; listening wider is a deliberate configuration change.
 
 **How do keys stay out of the repo and the logs?**
 The configuration never holds a key: `api_key_env` names an environment variable, read once at load, and an unset
-one stops the gateway from starting. URLs with credentials are refused. The log line has ids, statuses, models,
+one stops the gateway from starting. URLs with credentials are refused, and no configuration error repeats a
+`base_url` at all: the first version quoted it, through `url.Redacted()` at best, which hides a password but not a
+key pasted as the user name or into the query (found in review). A key with a space or control character (a line
+ending from a `.env` file) is refused too; before that, net/http refused to send it and every request looked like
+an unreachable provider. The log line has ids, statuses, models,
 timings and sizes, never content or headers; `TestTheLogHasTheFactsAndNoContentOrKeys` greps the log for the prompt,
 the provider's key and the client's key. CI and the tests only ever talk to mocks.
 
@@ -128,6 +173,26 @@ Latency as time to first token plus time per token written, failures as an error
 returning from the handler, which would have sent an empty 200. It counts a word as a token; it has no tokenizer.
 
 ## Testing and measuring
+
+**What does the gateway cost?**
+At p50, 42 µs on a 79-byte request and 84 µs on a 4 KB conversation, against a mock answering on loopback with no
+latency (README "Results"). The parse and rewrite are 2.1 and 35 µs of that (53 and 397 allocations); the rest is
+the second HTTP hop. A real model takes hundreds of milliseconds, so it's under 0.1% there. If anything, the parse
+is what I'd optimize first: it goes over the body several times and allocates for every token.
+
+**Why keep 256 idle connections per provider?**
+Go's default keeps 2 per host. With 32 requests in flight, every other request then opened a new connection (0.475 a
+request) and left a socket in TIME_WAIT; with 256 it was 0.0102, roughly one connection per request in flight,
+opened once, and 45% more requests a second (`BenchmarkPool`). `TestTheGatewayKeepsItsProviderConnections` pins
+it: the second burst of 32 opens 0 connections, 30 with the default.
+
+**What did the review find?**
+One agent reviewed the code at `07b8b14` for 16 minutes and reproduced eight defects as failing tests: the empty
+200s (gateway and mock), `base_url` secrets in error messages, `max_response_bytes` at `math.MaxInt64` overflowing
+`limit+1` (every answer a 502), the mock's `Close` comment promising what it didn't do and its hang band moving with
+the error rate, and `/readyz`'s 503 being unobservable. Its suspicions gave three more fixes (DNS rebinding, keys
+with control characters, the swallowed second Ctrl-C) and its list of mechanisms it could break without a test
+failing gave five new tests and four new cases or checks in existing ones. Each fix is a commit that says "found in review".
 
 **How did you test the mapping table?**
 With real HTTP providers on loopback that misbehave on purpose: one per row of the table (`answering`), one that
