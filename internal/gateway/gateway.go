@@ -154,8 +154,12 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		case errors.As(err, &netErr) && netErr.Timeout():
 			g.fail(w, x, openai.Errorf(http.StatusRequestTimeout, openai.TypeInvalidRequest, "",
 				"request_timeout", "the body took too long to arrive"), err)
-		default: // the client went away mid-body
-			x.status, x.err = StatusClientClosed, err
+		default:
+			// A malformed body (a bad chunk length, a body shorter than its Content-Length) or a client that left
+			// mid-body; the two look alike from here. Answer either way: returning without writing would make
+			// net/http send an empty 200 to a client still listening (found in the day-1 review).
+			g.fail(w, x, openai.Errorf(http.StatusBadRequest, openai.TypeInvalidRequest, "", "invalid_body",
+				"the request body couldn't be read: %s", err), err)
 		}
 		return
 	}
@@ -274,7 +278,11 @@ func (g *Gateway) failUpstream(w http.ResponseWriter, r *http.Request, ctx conte
 		g.fail(w, x, openai.Errorf(http.StatusServiceUnavailable, openai.TypeServer, "", "shutting_down",
 			"the gateway is shutting down; retry"), err)
 	case r.Context().Err() != nil:
+		// The client went away, or half-closed its side, which net/http also reports as gone. Drop the connection:
+		// returning without writing would make net/http send an empty 200 to a client that may still be reading
+		// (found in the day-1 review). The log line still runs, deferred.
 		x.status, x.err = StatusClientClosed, err
+		panic(http.ErrAbortHandler)
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		g.fail(w, x, upstreamError(http.StatusGatewayTimeout, "upstream_timeout",
 			"the provider %s didn't answer within %s", p.Name, p.Timeout), err)

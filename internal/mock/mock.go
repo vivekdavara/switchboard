@@ -170,8 +170,13 @@ func (p *Provider) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &tooBig) {
 			openai.WriteError(w, openai.Errorf(http.StatusRequestEntityTooLarge, openai.TypeInvalidRequest, "",
 				"request_too_large", "the body is larger than %d bytes", MaxRequestBytes))
+			return
 		}
-		return // otherwise the client went away mid-body
+		// A malformed body, or a client that left mid-body. Answer either way: a handler that writes nothing gets
+		// an empty 200 from net/http (found in the day-1 review).
+		openai.WriteError(w, openai.InvalidRequest("", "invalid_body", "the request body couldn't be read: %s",
+			err))
+		return
 	}
 	req, e := openai.ParseChatRequest(body)
 	if e == nil {
@@ -205,10 +210,10 @@ func (p *Provider) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 		case <-p.stop:
-			// Returning would send an empty 200. Drop the connection instead, as a provider that dies does.
-			panic(http.ErrAbortHandler)
 		}
-		return
+		// Returning would send an empty 200 to a client still reading (one that half-closed, or any client after
+		// Close). Drop the connection instead, as a provider that dies does.
+		panic(http.ErrAbortHandler)
 	}
 
 	delay := time.Duration(float64(p.cfg.TTFT)*f.ttftF) +
@@ -219,7 +224,7 @@ func (p *Provider) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	case <-timer.C:
 	case <-r.Context().Done():
 		p.abandoned.Add(1)
-		return
+		panic(http.ErrAbortHandler) // as above: never an empty 200
 	case <-p.stop:
 		p.abandoned.Add(1)
 		panic(http.ErrAbortHandler)

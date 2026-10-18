@@ -56,7 +56,9 @@ An unknown path is 404 and a known path with the wrong method is 405 with an `Al
    `text/plain` body is valid JSON. A gateway on 127.0.0.1 that holds provider keys would otherwise spend them for any
    page its user visits. `application/json` makes the browser ask first (a CORS preflight), and Switchboard never
    says yes.
-2. **Size.** The body is read up to `max_request_bytes` (default 4 MiB); one byte more is 413.
+2. **Size.** The body is read up to `max_request_bytes` (default 4 MiB); one byte more is 413. A body that can't be
+   read (a malformed chunk, a body shorter than its `Content-Length`) is 400 `invalid_body`, and one that takes
+   longer than the server's read timeout is 408.
 3. **One meaning.** `jsonstrict.ParseObject` accepts the body only if every parser would read it the same way: valid
    UTF-8, exactly one JSON object, no key twice in any object at any depth, nested at most 128 deep. Otherwise 400.
    encoding/json alone would keep the last of two `model` keys where another parser keeps the first, so the gateway
@@ -102,7 +104,9 @@ gateway's key is wrong; an SDK given 401 tells its user that *their* key is wron
 | hasn't finished answering within the provider's `timeout` | 504, code `upstream_timeout` |
 
 If the client goes away first, its request's context is cancelled, which cancels the upstream request too; the log
-line says status 499 (nginx's "client closed request") and nothing is written.
+line says status 499 (nginx's "client closed request") and the connection is dropped (`http.ErrAbortHandler`).
+Writing nothing and returning is not the same: net/http then sends `200 OK` with an empty body itself, which a
+client that only half-closed its side would read as an answer (found in the day-1 review).
 
 Day 2 changes the 5xx, 429, unreachable and timeout rows: they become reasons to try the next target, and only when
 no target is left does the client see them.
