@@ -143,9 +143,12 @@ no target is left does the client see them.
   at the moment of a stop can fail with a reset rather than a 503; clients retry it like any connection error.
   Draining (`drain_delay` with a load balancer that polls `/readyz`) is the cure; with no balancer in front, a client
   retries the reset like any connection error.
-- A second SIGINT or SIGTERM ends the process at once, mid-drain or mid-grace: after the first, `main` gives signals
-  back their default handling (`NotifyContext` would otherwise catch every later one until `main` returned; a
-  suspicion of the day-1 review, `TestASecondSignalEndsTheProcessAtOnce` runs the real binary to check it).
+- A second SIGINT or SIGTERM ends the process at once, mid-drain or mid-grace: on the first, `main` gives signals
+  back their default handling and only then starts the stop (`NotifyContext` would catch every later one until
+  `main` returned; a suspicion of the day-1 review). `TestASecondSignalEndsTheProcessAtOnce` runs the real binary to
+  check it. The first fix handed signals back after starting the stop, in a goroutine racing the drain, and CI once
+  caught the second signal swallowed; with a 100 ms delay at that point, that order fails 3 of 3 runs and this one
+  passes.
 
 ## Connections to providers
 

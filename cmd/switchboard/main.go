@@ -30,13 +30,17 @@ import (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	// After the first signal, the next gets Go's default handling: it ends the process at once, mid-drain or
-	// mid-grace, as an operator pressing Ctrl-C twice expects. Until main returned, NotifyContext swallowed it.
+	ctx, cancel := context.WithCancel(context.Background())
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		<-ctx.Done()
-		stop()
+		<-sigs
+		// The first signal starts the stop. Signals get Go's default handling back first, then the stop starts, so
+		// a second one ends the process at once, mid-drain or mid-grace, as an operator pressing Ctrl-C twice
+		// expects. (signal.NotifyContext swallowed every later signal until main returned; and handing them back
+		// after the cancel, as the first fix did, raced with the stop: CI once saw the second signal caught.)
+		signal.Reset(os.Interrupt, syscall.SIGTERM)
+		cancel()
 	}()
 	os.Exit(run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr, nil))
 }
