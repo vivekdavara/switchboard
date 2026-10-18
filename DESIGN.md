@@ -56,7 +56,9 @@ An unknown path is 404 and a known path with the wrong method is 405 with an `Al
    port), or it gets 403 `host_not_allowed`. A web page whose own domain is made to resolve to 127.0.0.1 (DNS
    rebinding) is same-origin with the gateway it reaches that way, so the content-type rule below doesn't stop it;
    its `Host` header still names its own domain. (Suspected in the day-1 review; a request with `Host:
-   attacker.example:8108` was answered 200 until this check.)
+   attacker.example:8108` was answered 200 until this check.) A request with no `Host` (HTTP/1.0, as health checkers
+   send) passes, since no browser sends one, and IP addresses compare as addresses (`[0:0:0:0:0:0:0:1]` is `::1`,
+   `[::ffff:127.0.0.1]` is `127.0.0.1`); the second review found both refused.
 1. **Content type.** The request must say `Content-Type: application/json` (parameters such as `charset=utf-8` are
    fine), or it gets 415. This is not pedantry: a web page can make a browser send a cross-origin POST without asking
    the server first only if its content type is a form's or `text/plain`, and a form can be written so that its
@@ -177,7 +179,8 @@ silent override), then decoding with unknown fields refused.
 ```
 
 - `allowed_hosts` lists the names the `Host` header may hold (step 0); `["*"]` allows any, for a gateway behind a
-  proxy that checks hosts itself. An empty list, a port or brackets in an entry are errors.
+  proxy that checks hosts itself. Names may hold `_` (Docker Compose's service names do); addresses are kept in one
+  spelling. An empty list, a port or brackets in an entry are errors.
 - `listen` defaults to `127.0.0.1:8108`. Until day 3 brings client keys, anyone who can reach the port can spend the
   providers' keys, so the default is loopback only.
 - A provider's key is never in the file: `api_key_env` names an environment variable, which must be set and

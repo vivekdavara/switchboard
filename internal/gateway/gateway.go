@@ -87,12 +87,20 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	openai.Serve(g.mux, w, r)
 }
 
-// hostAllowed says whether a request's Host header names an allowed host, with or without a port.
+// hostAllowed says whether a request's Host header names an allowed host, with or without a port. No Host at all
+// (HTTP/1.0, as health checkers such as HAProxy's send) is allowed: a browser always sends one, so no rebinding page
+// can send none. IP addresses compare as addresses, so [0::1] is ::1. (Both found in the day-1 second review.)
 func (g *Gateway) hostAllowed(host string) bool {
+	if host == "" {
+		return true
+	}
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")), ".")
+	if ip := net.ParseIP(host); ip != nil {
+		host = ip.String()
+	}
 	for _, a := range g.cfg.AllowedHosts {
 		if a == "*" || a == host {
 			return true

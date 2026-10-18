@@ -266,7 +266,9 @@ func parseProvider(raw json.RawMessage, getenv func(string) string) (*Provider, 
 // DefaultAllowedHosts are the Host names a gateway accepts when the file names none.
 var DefaultAllowedHosts = []string{"localhost", "127.0.0.1", "::1"}
 
-var hostName = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
+// hostName is a DNS name, with '_' allowed: net/http accepts it in a Host, and Docker Compose names services and
+// containers with it (my_gateway, project_gateway_1; found in the day-1 second review).
+var hostName = regexp.MustCompile(`^[a-z0-9_]([a-z0-9._-]*[a-z0-9_])?$`)
 
 // allowedHosts checks the file's allowed_hosts, giving the defaults if it named none.
 func allowedHosts(hosts []string) ([]string, error) {
@@ -280,7 +282,9 @@ func allowedHosts(hosts []string) ([]string, error) {
 	out := make([]string, len(hosts))
 	for i, h := range hosts {
 		h = strings.ToLower(h)
-		if h != "*" && net.ParseIP(h) == nil && !hostName.MatchString(h) {
+		if ip := net.ParseIP(h); ip != nil {
+			h = ip.String() // one spelling per address: 0:0:0:0:0:0:0:1 is ::1, as the gateway compares it
+		} else if h != "*" && !hostName.MatchString(h) {
 			return nil, fmt.Errorf("allowed_hosts[%d] %q: a host name or IP address, without a port or brackets", i,
 				hosts[i])
 		}

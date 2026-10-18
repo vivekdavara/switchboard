@@ -791,6 +791,8 @@ func TestOnlyAllowedHostsAreAnswered(t *testing.T) {
 		{"127.0.0.1:8108", true},
 		{"[::1]:8108", true},
 		{"[::1]", true},
+		{"[0:0:0:0:0:0:0:1]:8108", true},  // ::1 written out
+		{"[::ffff:127.0.0.1]:8108", true}, // 127.0.0.1, IPv4-mapped
 		{"attacker.example:8108", false},
 		{"attacker.example", false},
 		{"127.0.0.1.nip.io:8108", false},
@@ -808,8 +810,8 @@ func TestOnlyAllowedHostsAreAnswered(t *testing.T) {
 			}
 		}
 	}
-	if got := len(up.requests()); got != 7 {
-		t.Errorf("the provider got %d requests, want only the 7 allowed", got)
+	if got := len(up.requests()); got != 9 {
+		t.Errorf("the provider got %d requests, want only the 9 allowed", got)
 	}
 	// Every path is checked, health endpoints included.
 	if resp, _ := sendAs(t, srv, "attacker.example", "/v1/models"); resp.StatusCode != 403 {

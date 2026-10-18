@@ -64,9 +64,10 @@ func TestWhatTheFileLeavesOutTakesItsDefault(t *testing.T) {
 	if strings.Join(c.AllowedHosts, ",") != "localhost,127.0.0.1,::1" {
 		t.Errorf("default allowed hosts %q", c.AllowedHosts)
 	}
-	c, err = Parse([]byte(`{"allowed_hosts":["Gateway.Internal","*"],`+minimal[1:]), env(nil))
-	if err != nil || strings.Join(c.AllowedHosts, ",") != "gateway.internal,*" {
-		t.Errorf("allowed_hosts: %v %v", c, err)
+	c, err = Parse([]byte(`{"allowed_hosts":["Gateway.Internal","*","my_gateway","0:0:0:0:0:0:0:1","::FFFF:127.0.0.1"],`+
+		minimal[1:]), env(nil))
+	if err != nil || strings.Join(c.AllowedHosts, ",") != "gateway.internal,*,my_gateway,::1,127.0.0.1" {
+		t.Errorf("allowed_hosts: %q %v", c.AllowedHosts, err)
 	}
 	c, err = Parse([]byte(`{"drain_delay":"1.5s",`+minimal[1:]), env(nil))
 	if err != nil || c.DrainDelay != 1500*time.Millisecond {
