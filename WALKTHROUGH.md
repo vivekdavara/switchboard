@@ -201,6 +201,10 @@ One agent reviewed the code at `07b8b14` for 16 minutes and reproduced eight def
 the error rate, and `/readyz`'s 503 being unobservable. Its suspicions gave three more fixes (DNS rebinding, keys
 with control characters, the swallowed second Ctrl-C) and its list of mechanisms it could break without a test
 failing gave five new tests and four new cases or checks in existing ones. Each fix is a commit that says "found in review".
+A second, narrower review of only the code written since found that my fixes had gaps of their own: the new `Host`
+check refused HTTP/1.0 health probes (no `Host` at all) and IPv6 written out in full, `allowed_hosts` refused Docker
+Compose's underscore names, and `api_key_env`'s errors printed a key pasted into it, the very thing the `base_url`
+fix had just ruled out elsewhere. Reviewing the fixes paid off again.
 
 **How did you test the mapping table?**
 With real HTTP providers on loopback that misbehave on purpose: one per row of the table (`answering`), one that
