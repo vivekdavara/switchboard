@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -281,5 +282,20 @@ func TestVersionNamesTheGoRelease(t *testing.T) {
 	if code := run(context.Background(), []string{"version"}, noEnv, &out, io.Discard, nil); code != 0 ||
 		!strings.HasPrefix(out.String(), "switchboard ") || !strings.Contains(out.String(), "go1.") {
 		t.Errorf("exit %d: %q", code, out.String())
+	}
+}
+
+// The server's timeouts are DESIGN.md's ("Timeouts and shutdown"): the day-1 review removed all three and no test
+// noticed. Waiting out the real values (10 s, 60 s, 120 s) in a test would be slow, so this pins the settings.
+func TestTheServerHasItsTimeoutsAndNoWriteTimeout(t *testing.T) {
+	base := context.Background()
+	srv := newServer(http.NotFoundHandler(), base, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	if srv.ReadHeaderTimeout != 10*time.Second || srv.ReadTimeout != 60*time.Second ||
+		srv.IdleTimeout != 120*time.Second || srv.WriteTimeout != 0 {
+		t.Errorf("timeouts: header %v, read %v, idle %v, write %v", srv.ReadHeaderTimeout, srv.ReadTimeout,
+			srv.IdleTimeout, srv.WriteTimeout)
+	}
+	if srv.BaseContext(nil) != base {
+		t.Error("requests don't derive from the base context")
 	}
 }

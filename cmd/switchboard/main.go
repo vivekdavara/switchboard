@@ -122,14 +122,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, listening 
 	// every request still running when the grace is over, and their upstream requests with them.
 	base, cancelAll := context.WithCancelCause(context.Background())
 	defer cancelAll(nil)
-	srv := &http.Server{
-		Handler:           g,
-		ReadHeaderTimeout: readHeaderTimeout,
-		ReadTimeout:       readTimeout,
-		IdleTimeout:       idleTimeout,
-		BaseContext:       func(net.Listener) context.Context { return base },
-		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
-	}
+	srv := newServer(g, base, log)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	g.SetReady(true)
@@ -179,6 +172,18 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, listening 
 	}
 	log.Info("stopped", "clean", clean)
 	return 0
+}
+
+// newServer is the HTTP server serve runs: its timeouts, and every request's context derived from base.
+func newServer(h http.Handler, base context.Context, log *slog.Logger) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
+		BaseContext:       func(net.Listener) context.Context { return base },
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
 }
 
 // version says which switchboard this is: the module version the go command stamps from git (a tag such as v1.0.0
