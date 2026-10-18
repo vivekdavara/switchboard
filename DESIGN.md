@@ -163,7 +163,9 @@ keeps up to 256 idle connections per provider; README "Results" measures the dif
 ## Configuration
 
 A JSON file named by `-config`, read as strictly as a request: `jsonstrict` first (a repeated key is an error, not a
-silent override), then decoding with unknown fields refused.
+silent override), then each object member by member against the exact key names. (encoding/json's
+`DisallowUnknownFields` alone still fills a field from a key in any case, so `"Timeout"` would pass as `timeout`.)
+A null is an error too, not "the default".
 
 ```json
 {
@@ -188,13 +190,13 @@ silent override), then decoding with unknown fields refused.
   variables are by convention and keys never are: a key pasted into `api_key_env` by mistake (`sk-proj-...`,
   `gsk_...`) was printed whole until the second review. A key with a space or a control character (a line ending
   from a `.env` file) is refused too: net/http won't send it in a header, and every request would otherwise look
-  like an unreachable provider. Keys are never logged; a test checks the logs of a
-  request for the key.
+  like an unreachable provider. Keys are never logged; a test checks the logs of a request for the key.
 - Checked at start: names unique and non-empty; `base_url` an absolute `http` or `https` URL without credentials, a
   query or a fragment; every model's provider exists; durations parse (timeouts positive, the grace may be 0);
   sizes from 1 byte to 1 GiB (the gateway holds whole bodies in memory; `math.MaxInt64` overflowed its read of the
-  answer, found in the day-1 review). No error repeats a `base_url`, not even redacted: a key pasted into it can sit in the user name,
-  the password or the query, and an unparseable URL can't be redacted at all (found in the day-1 review).
+  answer, found in the day-1 review). No error repeats a `base_url`, not even redacted: a key pasted into it can sit
+  in the user name, the password or the query, and an unparseable URL can't be redacted at all (found in the day-1
+  review).
 - The checked-in `configs/local.json` points at the two mock providers, so `make demo` needs no key at all. Live
   providers are opt-in: a config that names one, and its key in the environment.
 
