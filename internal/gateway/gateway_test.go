@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -531,6 +532,38 @@ func TestAProviderThatCantBeReachedOrBreaksOffIs502(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "connection refused") {
 		t.Errorf("the log should have the cause:\n%s", logs)
+	}
+}
+
+// A completion that reached the provider is never sent again by Go's transport. net/http resends a request by itself
+// on a reused connection that breaks, if the request is "replayable": a GET, or a POST carrying an Idempotency-Key
+// or X-Idempotency-Key header. The gateway's POSTs carry neither, so a provider that reads the second request and
+// drops the connection sees two requests in all, and the client a 502. Adding such a header upstream (say, for
+// caching on day 3) would make this test see a third.
+func TestAForwardedRequestIsNeverResentByTheTransport(t *testing.T) {
+	var n atomic.Int32
+	up := newProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"id":"first"}`) // keep-alive: the second request reuses this connection
+			return
+		}
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close() // read the request, answer nothing
+		}
+	}))
+	srv, _, _ := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/m")
+	if resp, b := send(t, srv, ask); resp.StatusCode != 200 {
+		t.Fatalf("first: %d %s", resp.StatusCode, b)
+	}
+	resp, b := send(t, srv, ask)
+	if _, code, _, _ := errorOf(t, b); resp.StatusCode != 502 || code != "upstream_unavailable" {
+		t.Errorf("second: %d %s", resp.StatusCode, b)
+	}
+	time.Sleep(50 * time.Millisecond) // a resend would arrive about now
+	if got := len(up.requests()); got != 2 {
+		t.Errorf("the provider saw %d requests, want 2: the transport resent one", got)
 	}
 }
 
