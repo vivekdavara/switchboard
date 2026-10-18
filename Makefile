@@ -21,9 +21,11 @@ fuzz:
 demo:
 	scripts/demo.sh
 
-# README, "Results": the gateway's overhead (sequential, two request shapes) and its connection pool (32 at once).
+# README, "Results": the gateway's overhead (sequential, two request shapes), its connection pool (32 at once), and
+# its own work on a body (parse, check, rewrite).
 # The pool runs are short because Go's default of 2 idle connections leaves about one socket in TIME_WAIT per two
 # requests, for 30 s on macOS, out of 16,384 ephemeral ports. Needs a quiet machine.
 bench:
 	go test -run '^$$' -bench Overhead -benchtime 20000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench Pool -benchtime 3000x -count 6 ./internal/gateway
+	go test -run '^$$' -bench ParseAndRewrite -benchtime 20000x -count 6 ./internal/openai
