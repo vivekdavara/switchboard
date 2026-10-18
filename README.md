@@ -223,22 +223,23 @@ into failures or hangs.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (80 test and fuzz functions, about 6 s);
+`make check` runs gofmt, `go vet` and `go test -race` over every package (82 test and fuzz functions, about 6 s);
 CI runs the same on Ubuntu 24.04, then `make demo`'s script with the SDK checks as a second job.
 
 | Package | What the tests pin down |
 |---|---|
 | `jsonstrict` | members in order and byte for byte; repeated keys at any depth (also after unescaping); invalid UTF-8; anything but one object; the depth limit; a fuzz test that every accepted body rebuilds to itself |
 | `openai` | the acted-on fields and every way they can be wrong; keys equal to them only when case is ignored (including `ſ` for `s`), at the top level, in messages and in parts; the rewrite leaves every other byte alone; a fuzz test that a Go provider reads the forwarded body as the gateway did; the error envelope |
-| `config` | the checked-in configs load; defaults; 52 kinds of mistake, each refused with its name; no key, nothing of a `base_url`, and no `api_key_env` that may be a pasted key, in any error |
+| `config` | the checked-in configs load; defaults; 59 kinds of mistake, each refused with its name; no key, nothing of a `base_url`, and no `api_key_env` that may be a pasted key, in any error |
 | `mock` | exact answers and usage; `max_tokens` and `n`; validation; the key; latency lower bounds; jitter bounds; the same seed gives the same run, and a higher error or hang rate only adds failures or hangs; `Close` drops held and later requests; an unreadable body is a 400 |
 | `gateway` | a forward with only `model` rewritten and only the allowlisted headers; the `Host` allowlist; every refusal before forwarding, the request limit at exactly its boundary, a 408 for a slow body, a 503 for a body still arriving at the stop; every row of the mapping table with a misbehaving provider; the response limit at exactly its boundary; timeouts (no answer, a trickled body); unreachable and cut-off providers; a client that leaves or half-closes (never an empty 200); the shutdown 503; a forwarded request never resent; HTTP/2 to an https provider; the pool keeping its connections; the log line's facts and absences; 64 concurrent requests |
 | `cmd/...` | serving, readiness and a clean stop; the drain (`/readyz` 503 while still answering); a request finishing within the grace; one still running after it getting a 503; a second signal ending the real binary at once; the server's timeouts; usage errors and exit codes |
 
-Mutation checks, run by hand: 36 mechanisms removed or broken one at a time, and each made a test fail: 22 in the
-gateway (the header allowlist, the redirect rule, the 401 rule, the content type, the `Host` check, both limits at
-both edges, the timeouts, the pool, never resending, waking a slow body at the stop...), 7 in the stop sequence and
-the signals, 3 in parsing and the case rules, 4 in the mock. Two more didn't count: one didn't build, and reading one byte more than the response
+Mutation checks, run by hand: 43 mechanisms removed or broken one at a time, and each made a test fail: 24 in the
+gateway (the header allowlist, the redirect rule, the 401 rule, the content type, the `Host` check and its
+exemptions and log, both limits at both edges, the timeouts, the pool, never resending, waking a slow body at the
+stop...), 7 in the stop sequence and the signals, 3 in the configuration's errors and host rules, 3 in parsing and
+the case rules, 6 in the mock. Two more didn't count: one didn't build, and reading one byte more than the response
 limit changes nothing (the size check still catches it). The commit messages list them.
 
 ## Design decisions
