@@ -1,4 +1,4 @@
-.PHONY: bench build check demo fuzz lint test
+.PHONY: bench build check cross demo fuzz lint test
 
 # What CI runs.
 check: lint test
@@ -31,3 +31,9 @@ bench:
 	go test -run '^$$' -bench Overhead -benchtime 20000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench Pool -benchtime 3000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench ParseAndRewrite -benchtime 20000x -count 6 ./internal/openai
+
+# Builds for the other platforms, as CI does: a Unix-only call (syscall.Kill) once broke the Windows build unnoticed.
+cross:
+	GOOS=windows GOARCH=amd64 go build -o /dev/null ./...
+	GOOS=linux GOARCH=arm64 go build -o /dev/null ./...
+	GOOS=darwin GOARCH=arm64 go build -o /dev/null ./...

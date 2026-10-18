@@ -45,7 +45,11 @@ func main() {
 		// it again with the default handling, which kills the process; exit 130 if it was ignored when we started.
 		sig := <-sigs
 		signal.Reset(os.Interrupt, syscall.SIGTERM)
-		syscall.Kill(os.Getpid(), sig.(syscall.Signal))
+		// os.Process.Signal, not syscall.Kill: it builds on every platform (syscall.Kill broke the Windows build;
+		// there, where a process can't signal itself an interrupt, the exit below ends it).
+		if self, err := os.FindProcess(os.Getpid()); err == nil {
+			self.Signal(sig)
+		}
 		time.Sleep(time.Second)
 		os.Exit(130)
 	}()
