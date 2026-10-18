@@ -64,9 +64,10 @@ func TestWhatTheFileLeavesOutTakesItsDefault(t *testing.T) {
 	if strings.Join(c.AllowedHosts, ",") != "localhost,127.0.0.1,::1" {
 		t.Errorf("default allowed hosts %q", c.AllowedHosts)
 	}
-	c, err = Parse([]byte(`{"allowed_hosts":["Gateway.Internal","*","my_gateway","0:0:0:0:0:0:0:1","::FFFF:127.0.0.1"],`+
-		minimal[1:]), env(nil))
-	if err != nil || strings.Join(c.AllowedHosts, ",") != "gateway.internal,*,my_gateway,::1,127.0.0.1" {
+	c, err = Parse([]byte(`{"allowed_hosts":["Gateway.Internal","*","my_gateway","0:0:0:0:0:0:0:1","::FFFF:127.0.0.1",`+
+		`"a","x-1.example","10.0.0.5"],`+minimal[1:]), env(nil))
+	if err != nil || strings.Join(c.AllowedHosts, ",") !=
+		"gateway.internal,*,my_gateway,::1,127.0.0.1,a,x-1.example,10.0.0.5" {
 		t.Errorf("allowed_hosts: %q %v", c.AllowedHosts, err)
 	}
 	c, err = Parse([]byte(`{"drain_delay":"1.5s",`+minimal[1:]), env(nil))
@@ -107,6 +108,13 @@ func TestMistakesAreRefusedAndNamed(t *testing.T) {
 		{"a host with a port", file(`"allowed_hosts":["localhost:8108"]`, p, m), "without a port"},
 		{"a bracketed host", file(`"allowed_hosts":["[::1]"]`, p, m), "without a port or brackets"},
 		{"a host with a space", file(`"allowed_hosts":["my host"]`, p, m), "allowed_hosts[0]"},
+		{"a host starting with '-'", file(`"allowed_hosts":["-gateway"]`, p, m), "allowed_hosts[0]"},
+		{"a host ending with '-'", file(`"allowed_hosts":["gateway-"]`, p, m), "allowed_hosts[0]"},
+		{"a host ending with '.'", file(`"allowed_hosts":["gateway."]`, p, m), "allowed_hosts[0]"},
+		{"a host with a slash", file(`"allowed_hosts":["gateway/v1"]`, p, m), "allowed_hosts[0]"},
+		{"a host with an @", file(`"allowed_hosts":["user@gateway"]`, p, m), "allowed_hosts[0]"},
+		{"a host in Unicode", file(`"allowed_hosts":["gätewäy"]`, p, m), "allowed_hosts[0]"},
+		{"a second bad host", file(`"allowed_hosts":["localhost","a b"]`, p, m), "allowed_hosts[1]"},
 		{"hosts not a list", file(`"allowed_hosts":"localhost"`, p, m), "allowed_hosts"},
 		{"a negative drain delay", file(`"drain_delay":"-5s"`, p, m), "drain_delay"},
 		{"no providers", `{"providers":[],"models":[` + m + `]}`, "at least one is required"},

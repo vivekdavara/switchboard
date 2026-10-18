@@ -30,6 +30,11 @@ func TestReviewABaseURLsSecretNeverReachesTheError(t *testing.T) {
 		"https://" + secret + ":@api.example.com/v1",             // the key as the user name, empty password
 		"https://api.example.com/v1?key=" + secret,               // the key in the query
 		"https://user:" + secret + "@api.example.com/v1?x=1#top", // credentials and a query
+		// Added after the second review: with the credentials check first, the URLs above never reach the scheme
+		// and host checks with a secret in them, so a mutant printing the URL there went unnoticed.
+		"htps://api.example.com/v1?key=" + secret, // a bad scheme, the key in the query
+		"http:///v1?key=" + secret,                // no host, the key in the query
+		"https://api.example.com/v1#" + secret,    // the key in a fragment
 	} {
 		_, err := Parse([]byte(`{"providers":[{"name":"p","base_url":"`+base+`"}],`+
 			`"models":[{"name":"m","provider":"p"}]}`), env(nil))
