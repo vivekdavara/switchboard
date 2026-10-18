@@ -58,6 +58,7 @@ func New(cfg *config.Config, transport http.RoundTripper, log *slog.Logger) *Gat
 	}
 	g.mux.HandleFunc("POST /v1/chat/completions", g.chat)
 	g.mux.HandleFunc("GET /v1/models", g.models)
+	g.mux.HandleFunc("GET /v1/models/{model...}", g.model) // "..." because model names can hold slashes
 	g.mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok\n")) })
 	g.mux.HandleFunc("GET /readyz", g.readyz)
 	return g
@@ -89,10 +90,27 @@ func (g *Gateway) readyz(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	list := openai.ModelList{Object: "list", Data: []openai.Model{}}
 	for _, m := range g.cfg.Models {
-		list.Data = append(list.Data, openai.Model{ID: m.Name, Object: "model", OwnedBy: m.Provider.Name})
+		list.Data = append(list.Data, modelObject(m))
 	}
 	b, _ := json.Marshal(list)
 	openai.WriteJSON(w, http.StatusOK, b)
+}
+
+// model answers GET /v1/models/{model}, which SDKs call to check that a model exists.
+func (g *Gateway) model(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("model")
+	m, ok := g.cfg.Route(name)
+	if !ok {
+		openai.WriteError(w, openai.Errorf(http.StatusNotFound, openai.TypeInvalidRequest, "model",
+			"model_not_found", "the model %q is not served here", name))
+		return
+	}
+	b, _ := json.Marshal(modelObject(m))
+	openai.WriteJSON(w, http.StatusOK, b)
+}
+
+func modelObject(m config.Model) openai.Model {
+	return openai.Model{ID: m.Name, Object: "model", OwnedBy: m.Provider.Name}
 }
 
 // exchange is one chat completion as the log line reports it.

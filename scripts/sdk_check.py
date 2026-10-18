@@ -25,6 +25,14 @@ def check(name, ok, detail):
 ids = [m.id for m in client.models.list()]
 check("the models", ids == ["fast", "smart", "mock-small"], ids)
 
+m = client.models.retrieve("smart")
+check("one model", m.id == "smart" and m.owned_by == "mock-b", f"{m.id}, owned by {m.owned_by}")
+try:
+    client.models.retrieve("gpt-9")
+    check("an unknown model's details", False, "no error")
+except NotFoundError as e:
+    check("an unknown model's details", e.status_code == 404 and e.code == "model_not_found", f"{e.status_code}")
+
 raw = client.chat.completions.with_raw_response.create(model="fast", messages=hello, max_tokens=12)
 r = raw.parse()
 check(

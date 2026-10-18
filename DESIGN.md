@@ -35,6 +35,7 @@ circuit breakers; day 3 puts Redis (port 6382) beside the gateway for rate limit
 |---|---|
 | `POST /v1/chat/completions` | Forwards a chat completion to the model's provider. `stream: true` is refused with 400 until day 2. |
 | `GET /v1/models` | The models this gateway serves, in OpenAI's list shape. |
+| `GET /v1/models/{model}` | One of them, or 404 `model_not_found`. Added while building: the OpenAI SDK's `models.retrieve` calls it. |
 | `GET /livez` | 200 while the process runs. |
 | `GET /readyz` | 200 once the configuration is loaded and the listener is open; 503 while shutting down. |
 
@@ -194,7 +195,7 @@ As built on day 1, beyond that plan:
   members) and `FuzzRewriteKeepsTheMeaning` (every accepted body's rewrite is read by encoding/json, as a Go
   provider would read it, with the model the gateway routed, the same stream flag and the same roles). Their seeds
   run in every `go test`; `make fuzz` runs the first for a minute.
-- The smoke test (`scripts/demo.sh`, `make demo`) checks eight requests with curl and six with the official OpenAI
+- The smoke test (`scripts/demo.sh`, `make demo`) checks eight requests with curl and eight with the official OpenAI
   Python SDK (`scripts/sdk_check.py`, the version pinned in `scripts/requirements-sdk.txt`): the SDK's own
   exceptions for the gateway's 404 and 400 are part of what "compatible" means.
 - Mutation checks by hand (each mechanism removed or broken, the tests run, the code restored from a copy); the

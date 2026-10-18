@@ -32,7 +32,7 @@ jobs:
 
   smoke:
     # The real binaries on their real ports: scripts/demo.sh starts two mock providers and the gateway, checks eight
-    # requests' answers with curl and six with the official OpenAI Python SDK, and fails if any differs.
+    # requests' answers with curl and eight with the official OpenAI Python SDK, and fails if any differs.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

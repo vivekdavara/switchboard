@@ -102,6 +102,7 @@ loads a configuration and prints its routes.
 |---|---|
 | `POST /v1/chat/completions` | Forwards a chat completion to the model's provider. `stream: true` is refused with 400 until day 2. |
 | `GET /v1/models` | The models this gateway serves, in OpenAI's list shape. |
+| `GET /v1/models/{model}` | One of them (404 `model_not_found` otherwise); SDKs call it to check a model exists. Names may hold slashes. |
 | `GET /livez` | 200 while the process runs. |
 | `GET /readyz` | 200 while serving; 503 before and during shutdown. |
 

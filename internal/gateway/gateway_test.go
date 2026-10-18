@@ -160,6 +160,26 @@ func errorOf(t *testing.T, b []byte) (typ, code, param, message string) {
 	return e.Error.Type, code, param, e.Error.Message
 }
 
+// errorOfOrEmpty is errorOf for bodies that may not be errors at all.
+func errorOfOrEmpty(b []byte) (typ, code, param, message string) {
+	var e struct {
+		Error struct {
+			Message, Type string
+			Code, Param   *string
+		}
+	}
+	if json.Unmarshal(b, &e) != nil {
+		return "", "", "", ""
+	}
+	if e.Error.Code != nil {
+		code = *e.Error.Code
+	}
+	if e.Error.Param != nil {
+		param = *e.Error.Param
+	}
+	return e.Error.Type, code, param, e.Error.Message
+}
+
 func mockProvider(t *testing.T, name string) *mock.Provider {
 	t.Helper()
 	cfg := mock.Defaults()
@@ -301,7 +321,8 @@ func TestRequestsTheGatewayRefusesNeverReachAProvider(t *testing.T) {
 
 func TestOtherPathsAndMethodsAreOpenAIErrors(t *testing.T) {
 	up := newProvider(t, mockProvider(t, "mock-a"))
-	srv, g, _ := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small", "smart=p0/mock-large")
+	srv, g, _ := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small", "smart=p0/mock-large",
+		"org/model-1=p0/mock-small")
 	for _, tc := range []struct {
 		method, path string
 		status       int
@@ -334,9 +355,37 @@ func TestOtherPathsAndMethodsAreOpenAIErrors(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&list)
 	resp.Body.Close()
 	want := openai.ModelList{Object: "list", Data: []openai.Model{
-		{ID: "fast", Object: "model", OwnedBy: "p0"}, {ID: "smart", Object: "model", OwnedBy: "p0"}}}
+		{ID: "fast", Object: "model", OwnedBy: "p0"}, {ID: "smart", Object: "model", OwnedBy: "p0"},
+		{ID: "org/model-1", Object: "model", OwnedBy: "p0"}}}
 	if fmt.Sprint(list) != fmt.Sprint(want) {
 		t.Errorf("models %+v", list)
+	}
+
+	for _, tc := range []struct {
+		path   string
+		status int
+		body   string
+	}{
+		{"/v1/models/fast", 200, `{"id":"fast","object":"model","created":0,"owned_by":"p0"}`},
+		{"/v1/models/org/model-1", 200, `{"id":"org/model-1","object":"model","created":0,"owned_by":"p0"}`},
+		{"/v1/models/org%2Fmodel-1", 200, `{"id":"org/model-1","object":"model","created":0,"owned_by":"p0"}`},
+		{"/v1/models/mock-small", 404, ""}, // an upstream name isn't a model here
+		{"/v1/models/", 404, ""},
+		{"/v1/models/gpt-9", 404, ""},
+	} {
+		resp, err := srv.Client().Get(srv.URL + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != tc.status {
+			t.Errorf("%s: %d %s", tc.path, resp.StatusCode, b)
+		} else if tc.status == 200 && string(b) != tc.body {
+			t.Errorf("%s: %s", tc.path, b)
+		} else if _, code, _, _ := errorOfOrEmpty(b); tc.status == 404 && code != "model_not_found" {
+			t.Errorf("%s: %s", tc.path, b)
+		}
 	}
 
 	status := func(path string) int {
