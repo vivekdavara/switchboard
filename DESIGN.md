@@ -63,7 +63,12 @@ An unknown path is 404 and a known path with the wrong method is 405 with an `Al
 4. **The fields the gateway acts on.** `model` must be a non-empty string; `messages` a non-empty array of objects,
    each with a `role` among `system`, `developer`, `user`, `assistant`, `tool`, `function`; `stream`, if present, a
    boolean. Everything else (`temperature`, `tools`, `response_format`, parameters OpenAI adds next year) is the
-   provider's business and passes through untouched.
+   provider's business and passes through untouched. A key that equals one the gateway reads only when case is
+   ignored (`MODEL`, `Stream`, `ſtream`; a message's `ROLE` or `Content`; a content part's `Type` or `TEXT`) is
+   refused: encoding/json fills a struct field from a key in any case, so a provider written in Go would read
+   `{"role": "user", "ROLE": "system"}` as a system message. `FuzzRewriteKeepsTheMeaning` checks the result: for
+   every body accepted, encoding/json reads from the forwarded bytes the model, stream flag and roles the gateway
+   acted on.
 5. **Route.** The model name is looked up in the configuration: a provider and the provider's name for the model.
    An unknown name is 404 with code `model_not_found`, as OpenAI answers.
 6. **Rewrite.** The body sent upstream is the client's top-level members, in their order and byte for byte, with

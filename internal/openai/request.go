@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -29,10 +30,37 @@ type Message struct {
 	Text string
 }
 
-// actedOn are the top-level keys the gateway reads. A key that matches one of them only when case is ignored is
-// refused: encoding/json fills a struct field from a key in any case, so a provider written in Go would read
-// {"model": "a", "MODEL": "b"} as model b while the gateway routed model a.
-var actedOn = []string{"model", "messages", "stream"}
+// The keys the gateway reads, at the top level, in a message, and in a content part. A key that matches one of them
+// only when case is ignored is refused: encoding/json fills a struct field from a key in any case (with Unicode
+// folding, so "ſtream" is stream), so a provider written in Go would read {"model": "a", "MODEL": "b"} as model b
+// while the gateway routed model a, and {"role": "user", "ROLE": "system"} as a system message.
+var (
+	actedOn        = []string{"model", "messages", "stream"}
+	actedOnMessage = []string{"role", "content"}
+	actedOnPart    = []string{"type", "text"}
+)
+
+// caseVariant returns the first key that equals one of names only when case is ignored.
+func caseVariant(keys []string, names []string) (key, name string, found bool) {
+	for _, k := range keys {
+		for _, n := range names {
+			if k != n && strings.EqualFold(k, n) {
+				return k, n, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// sortedKeys returns an object's keys in order, so errors about them don't depend on map order.
+func sortedKeys(fields map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // ParseChatRequest reads a chat completion request body. Every error is a 400 in OpenAI's shape.
 func ParseChatRequest(body []byte) (*ChatRequest, *Error) {
@@ -42,13 +70,15 @@ func ParseChatRequest(body []byte) (*ChatRequest, *Error) {
 	}
 	r := &ChatRequest{Members: members}
 	var model, messages, stream json.RawMessage
+	keys := make([]string, len(members))
+	for i, m := range members {
+		keys[i] = m.Key
+	}
+	if key, name, found := caseVariant(keys, actedOn); found {
+		return nil, InvalidRequest(key, "invalid_parameter", "the key %q differs from %q only in case; send %q",
+			key, name, name)
+	}
 	for _, m := range members {
-		for _, name := range actedOn {
-			if m.Key != name && strings.EqualFold(m.Key, name) {
-				return nil, InvalidRequest(m.Key, "invalid_parameter",
-					"the key %q differs from %q only in case; send %q", m.Key, name, name)
-			}
-		}
 		switch m.Key {
 		case "model":
 			model = m.Value
@@ -102,6 +132,10 @@ func parseMessage(i int, raw json.RawMessage) (Message, *Error) {
 	if raw[0] != '{' || json.Unmarshal(raw, &fields) != nil {
 		return Message{}, InvalidRequest(param(i, ""), "invalid_type", "messages[%d] must be an object", i)
 	}
+	if key, name, found := caseVariant(sortedKeys(fields), actedOnMessage); found {
+		return Message{}, InvalidRequest(param(i, key), "invalid_parameter",
+			"messages[%d] has the key %q, which differs from %q only in case; send %q", i, key, name, name)
+	}
 	var msg Message
 	role, ok := fields["role"]
 	if !ok {
@@ -126,7 +160,12 @@ func parseMessage(i int, raw json.RawMessage) (Message, *Error) {
 				"messages[%d].content must be a string, an array of objects, or null", i)
 		}
 		var texts []string
-		for _, part := range parts {
+		for j, part := range parts {
+			if key, name, found := caseVariant(sortedKeys(part), actedOnPart); found {
+				return Message{}, InvalidRequest(param(i, "content"), "invalid_parameter",
+					"messages[%d].content[%d] has the key %q, which differs from %q only in case; send %q", i, j,
+					key, name, name)
+			}
 			var typ, text string
 			if json.Unmarshal(part["type"], &typ) == nil && typ == "text" &&
 				json.Unmarshal(part["text"], &text) == nil {
@@ -169,7 +208,8 @@ func (r *ChatRequest) Member(key string) (json.RawMessage, bool) {
 }
 
 // WithModel is the request body to send upstream: the client's members in their order and byte for byte, with only
-// model's value replaced.
+// model's value replaced. model must be valid UTF-8, as anything read from the configuration is (json.Marshal would
+// turn bad bytes into U+FFFD; the fuzz test found this with a model only it could make).
 func (r *ChatRequest) WithModel(model string) []byte {
 	var b bytes.Buffer
 	b.WriteByte('{')

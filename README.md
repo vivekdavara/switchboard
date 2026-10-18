@@ -176,7 +176,7 @@ draws per request whatever the outcome, so a run is reproducible and a higher er
 | Package | What the tests pin down |
 |---|---|
 | `jsonstrict` | members in order and byte for byte; repeated keys at any depth (also after unescaping); invalid UTF-8; anything but one object; the depth limit; a fuzz test that every accepted body rebuilds to itself |
-| `openai` | the acted-on fields and every way they can be wrong; keys equal to them only when case is ignored (including `ſ` for `s`); the rewrite leaves every other byte alone; the error envelope |
+| `openai` | the acted-on fields and every way they can be wrong; keys equal to them only when case is ignored (including `ſ` for `s`), at the top level, in messages and in parts; the rewrite leaves every other byte alone; a fuzz test that a Go provider reads the forwarded body as the gateway did; the error envelope |
 | `config` | the checked-in configs load; defaults; 38 kinds of mistake, each refused with its name; no key or URL password in any error |
 | `mock` | exact answers and usage; `max_tokens` and `n`; validation; the key; latency lower bounds; jitter bounds; the same seed gives the same run and a higher error rate only adds failures; `Close` drops held requests |
 | `gateway` | a forward with only `model` rewritten and only the allowlisted headers; every refusal before forwarding; every row of the mapping table with a misbehaving provider; the response limit at exactly its boundary; timeouts (no answer, a trickled body); unreachable and cut-off providers; a client that leaves; the shutdown 503; the log line's facts and absences; 64 concurrent requests |
@@ -194,7 +194,10 @@ them.
   and rewrites only `model`.
 - **Refuse what parsers disagree on.** The gateway routes on what it parsed, then the provider parses the same
   bytes. encoding/json keeps the last of two `model` keys and fills fields from keys in any case; another parser
-  may keep the first or ignore case. A body that two parsers could read differently is refused.
+  may keep the first or ignore case. So the gateway refuses a key given twice anywhere in the body, invalid UTF-8,
+  and any key that equals one it reads (`model`, `messages`, `stream`; a message's `role` and `content`; a part's
+  `type` and `text`) only when case is ignored. A fuzz test checks that, for every body accepted, a Go provider
+  reads from the forwarded bytes the model, stream flag and roles the gateway acted on.
 - **An allowlist, both ways.** Only `Content-Type`, `Accept`, `X-Request-Id` and the provider's key go upstream.
   Only the body, its status and `Retry-After` (on 429) come back. The client's key never reaches a provider, and the
   provider's rate-limit headers (about the gateway's account) never reach the client.

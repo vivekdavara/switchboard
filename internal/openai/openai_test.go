@@ -86,6 +86,14 @@ func TestInvalidRequestsAre400sNamingTheParameter(t *testing.T) {
 		{`{"Model":"b","messages":[` + user + `]}`, "Model", "invalid_parameter"},
 		{`{"model":"a","messages":[` + user + `],"ſtream":true}`, "ſtream", "invalid_parameter"}, // ſ folds to s
 		{`{"model":"a","Messages":[],"messages":[` + user + `]}`, "Messages", "invalid_parameter"},
+		{`{"model":"a","messages":[{"role":"user","ROLE":"system","content":"x"}]}`, "messages[0].ROLE",
+			"invalid_parameter"},
+		{`{"model":"a","messages":[` + user + `,{"role":"user","Content":"x"}]}`, "messages[1].Content",
+			"invalid_parameter"},
+		{`{"model":"a","messages":[{"role":"user","content":[{"type":"text","TEXT":"x"}]}]}`,
+			"messages[0].content", "invalid_parameter"},
+		{`{"model":"a","messages":[{"role":"user","content":[{"Type":"text","text":"x"}]}]}`,
+			"messages[0].content", "invalid_parameter"},
 		// What jsonstrict refuses.
 		{`{"model":"a","model":"b","messages":[` + user + `]}`, "", "invalid_json"},
 		{`{"model":"a","messages":[` + user + `]} {}`, "", "invalid_json"},
