@@ -15,6 +15,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -76,8 +77,29 @@ func NewTransport() *http.Transport {
 // SetReady says whether GET /readyz answers 200.
 func (g *Gateway) SetReady(ready bool) { g.ready.Store(ready) }
 
-// ServeHTTP answers a request.
-func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) { openai.Serve(g.mux, w, r) }
+// ServeHTTP answers a request whose Host is allowed (config.AllowedHosts).
+func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !g.hostAllowed(r.Host) {
+		openai.WriteError(w, openai.Errorf(http.StatusForbidden, openai.TypeInvalidRequest, "", "host_not_allowed",
+			"the Host %q is not one this gateway answers to (allowed_hosts)", r.Host))
+		return
+	}
+	openai.Serve(g.mux, w, r)
+}
+
+// hostAllowed says whether a request's Host header names an allowed host, with or without a port.
+func (g *Gateway) hostAllowed(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")), ".")
+	for _, a := range g.cfg.AllowedHosts {
+		if a == "*" || a == host {
+			return true
+		}
+	}
+	return false
+}
 
 func (g *Gateway) readyz(w http.ResponseWriter, r *http.Request) {
 	if !g.ready.Load() {

@@ -112,7 +112,8 @@ Every error, the gateway's own included, has OpenAI's error shape, so SDKs raise
 {"error": {"message": "the model \"gpt-9\" is not served here; GET /v1/models lists the ones that are", "type": "invalid_request_error", "param": "model", "code": "model_not_found"}}
 ```
 
-Before forwarding, the gateway refuses: a content type other than `application/json` (415), a body over
+Before forwarding, the gateway refuses: a `Host` header that isn't one of `allowed_hosts` (403; by default only
+the loopback names, against DNS rebinding), a content type other than `application/json` (415), a body over
 `max_request_bytes` (413), a body with more than one meaning (a key given twice, invalid UTF-8, data after the
 object: 400), a missing or malformed `model`, `messages` or `stream` (400), and an unknown model (404). Everything
 else in the request (`temperature`, `tools`, `response_format`, parameters that don't exist yet) passes through
@@ -153,7 +154,8 @@ the request to the provider and in the log line) and `X-Switchboard-Provider`.
 ```
 
 Other settings: `max_request_bytes` (default 4 MiB), `max_response_bytes` (16 MiB; both at most 1 GiB),
-`drain_delay` (default 0: how long a stopping gateway keeps serving with `/readyz` at 503), a provider's `timeout`
+`drain_delay` (default 0: how long a stopping gateway keeps serving with `/readyz` at 503), `allowed_hosts`
+(default the loopback names; `["*"]` for any), a provider's `timeout`
 (default 60 s) and `api_key_env`. **No key is ever in a file:** `api_key_env` names the environment variable that
 holds it, and the gateway refuses to start if it is unset. A live provider is opt-in:
 `configs/openai.example.json` routes `gpt-4o-mini` to OpenAI with the key from `OPENAI_API_KEY`. Tests and CI use
@@ -206,8 +208,10 @@ them.
   provider's rate-limit headers (about the gateway's account) never reach the client.
 - **The provider's 401 is the gateway's problem.** Passing it on would tell an SDK user that their key is wrong. It
   becomes a 502.
-- **`application/json` only.** A web page can make a browser post a form or `text/plain` cross-origin without a
-  preflight; a gateway on localhost that holds provider keys would spend them for any page its user visits.
+- **`application/json` only, and only known hosts.** A web page can make a browser post a form or `text/plain`
+  cross-origin without a preflight; a gateway on localhost that holds provider keys would spend them for any page
+  its user visits. And a page whose domain is made to resolve to 127.0.0.1 (DNS rebinding) is same-origin, so it
+  needs no preflight at all; its `Host` header is what gives it away, so only `allowed_hosts` are answered.
 - **Loopback by default.** Until client keys exist (day 3), anyone who can reach the port can use the providers'
   keys.
 - **Stop in steps.** `/readyz` turns 503 and the gateway keeps serving for `drain_delay` (so a load balancer can

@@ -61,6 +61,13 @@ func TestWhatTheFileLeavesOutTakesItsDefault(t *testing.T) {
 	if err != nil || c.ShutdownGrace != 0 || c.DrainDelay != 0 {
 		t.Errorf("a zero grace is allowed, and no drain is the default: %v %v", c, err)
 	}
+	if strings.Join(c.AllowedHosts, ",") != "localhost,127.0.0.1,::1" {
+		t.Errorf("default allowed hosts %q", c.AllowedHosts)
+	}
+	c, err = Parse([]byte(`{"allowed_hosts":["Gateway.Internal","*"],`+minimal[1:]), env(nil))
+	if err != nil || strings.Join(c.AllowedHosts, ",") != "gateway.internal,*" {
+		t.Errorf("allowed_hosts: %v %v", c, err)
+	}
 	c, err = Parse([]byte(`{"drain_delay":"1.5s",`+minimal[1:]), env(nil))
 	if err != nil || c.DrainDelay != 1500*time.Millisecond {
 		t.Errorf("drain_delay: %v %v", c, err)
@@ -95,6 +102,11 @@ func TestMistakesAreRefusedAndNamed(t *testing.T) {
 		{"a bad grace", file(`"shutdown_grace":"10"`, p, m), "shutdown_grace"},
 		{"a negative grace", file(`"shutdown_grace":"-1s"`, p, m), "shutdown_grace"},
 		{"a bad drain delay", file(`"drain_delay":"5"`, p, m), "drain_delay"},
+		{"no allowed hosts", file(`"allowed_hosts":[]`, p, m), "allowed_hosts is empty"},
+		{"a host with a port", file(`"allowed_hosts":["localhost:8108"]`, p, m), "without a port"},
+		{"a bracketed host", file(`"allowed_hosts":["[::1]"]`, p, m), "without a port or brackets"},
+		{"a host with a space", file(`"allowed_hosts":["my host"]`, p, m), "allowed_hosts[0]"},
+		{"hosts not a list", file(`"allowed_hosts":"localhost"`, p, m), "allowed_hosts"},
 		{"a negative drain delay", file(`"drain_delay":"-5s"`, p, m), "drain_delay"},
 		{"no providers", `{"providers":[],"models":[` + m + `]}`, "at least one is required"},
 		{"providers not a list", `{"providers":{},"models":[` + m + `]}`, "providers"},

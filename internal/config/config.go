@@ -45,8 +45,13 @@ type Config struct {
 	// DrainDelay is how long a stopping gateway keeps serving with /readyz at 503 before it closes its listener, so
 	// a load balancer that polls /readyz stops sending first. 0 (the default) closes at once.
 	DrainDelay time.Duration
-	Providers  []*Provider
-	Models     []Model
+	// AllowedHosts are the host names (without ports, lower case) a request's Host header may name; "*" allows any.
+	// The default is the loopback names: a web page whose own domain is made to resolve to 127.0.0.1 (DNS
+	// rebinding) is same-origin with a gateway it reaches that way, so it can post JSON with no preflight, and only
+	// its Host header gives it away.
+	AllowedHosts []string
+	Providers    []*Provider
+	Models       []Model
 
 	routes map[string]Model
 }
@@ -108,6 +113,7 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 		routes:           map[string]Model{},
 	}
 	var grace, drain string
+	var hosts []string
 	var providers, models []json.RawMessage
 	if err := decodeExact("the file", top, fields{
 		"listen":             &c.Listen,
@@ -115,6 +121,7 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 		"max_response_bytes": &c.MaxResponseBytes,
 		"shutdown_grace":     &grace,
 		"drain_delay":        &drain,
+		"allowed_hosts":      &hosts,
 		"providers":          &providers,
 		"models":             &models,
 	}); err != nil {
@@ -141,6 +148,9 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 		if c.DrainDelay, err = time.ParseDuration(drain); err != nil || c.DrainDelay < 0 {
 			return nil, fmt.Errorf("drain_delay: %q is not a duration such as 5s", drain)
 		}
+	}
+	if c.AllowedHosts, err = allowedHosts(hosts); err != nil {
+		return nil, err
 	}
 
 	if len(providers) == 0 {
@@ -244,6 +254,32 @@ func parseProvider(raw json.RawMessage, getenv func(string) string) (*Provider, 
 		}
 	}
 	return p, nil
+}
+
+// DefaultAllowedHosts are the Host names a gateway accepts when the file names none.
+var DefaultAllowedHosts = []string{"localhost", "127.0.0.1", "::1"}
+
+var hostName = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
+
+// allowedHosts checks the file's allowed_hosts, giving the defaults if it named none.
+func allowedHosts(hosts []string) ([]string, error) {
+	if hosts == nil {
+		return DefaultAllowedHosts, nil
+	}
+	if len(hosts) == 0 {
+		return nil, errors.New("allowed_hosts is empty, so every request would be refused; leave it out for the " +
+			`loopback names, or use ["*"] for any`)
+	}
+	out := make([]string, len(hosts))
+	for i, h := range hosts {
+		h = strings.ToLower(h)
+		if h != "*" && net.ParseIP(h) == nil && !hostName.MatchString(h) {
+			return nil, fmt.Errorf("allowed_hosts[%d] %q: a host name or IP address, without a port or brackets", i,
+				hosts[i])
+		}
+		out[i] = h
+	}
+	return out, nil
 }
 
 // fields maps each key an object may have to where its value goes.

@@ -58,7 +58,7 @@ func TestReviewNoEmpty200(t *testing.T) {
 	srv, _, logs := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small")
 
 	t.Run("a malformed chunked body", func(t *testing.T) {
-		raw := "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n" +
+		raw := "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n" +
 			"Transfer-Encoding: chunked\r\n\r\nzz\r\n" + ask + "\r\n0\r\n\r\n"
 		resp, body := rawExchange(t, srv, raw, false)
 		if resp == nil {
@@ -70,7 +70,7 @@ func TestReviewNoEmpty200(t *testing.T) {
 	})
 
 	t.Run("a client that half-closes after its request", func(t *testing.T) {
-		raw := "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n" +
+		raw := "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n" +
 			"Connection: close\r\nContent-Length: " + strconv.Itoa(len(ask)) + "\r\n\r\n" + ask
 		resp, body := rawExchange(t, srv, raw, true)
 		if resp != nil {

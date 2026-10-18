@@ -753,3 +753,73 @@ func TestConcurrentRequestsEachGetTheirOwnAnswer(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// sendAs is send with the request's Host header set to host.
+func sendAs(t *testing.T, srv *httptest.Server, host, path string) (*http.Response, []byte) {
+	t.Helper()
+	req, _ := http.NewRequest("POST", srv.URL+path, strings.NewReader(ask))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = host // Go's client ignores a "Host" in req.Header
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp, b
+}
+
+// A web page whose own domain is made to resolve to 127.0.0.1 (DNS rebinding) is same-origin with the gateway it
+// reaches that way, so it can post JSON without a preflight; only its Host header gives it away. Suspected in the
+// day-1 review; before the check, a request with Host attacker.example:8108 got a 200 and reached the provider.
+func TestOnlyAllowedHostsAreAnswered(t *testing.T) {
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	srv, _, _ := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small")
+	for _, tc := range []struct {
+		host string
+		ok   bool
+	}{
+		{"localhost:8108", true},
+		{"LOCALHOST:8108", true},
+		{"localhost.:8108", true},
+		{"localhost", true},
+		{"127.0.0.1:8108", true},
+		{"[::1]:8108", true},
+		{"[::1]", true},
+		{"attacker.example:8108", false},
+		{"attacker.example", false},
+		{"127.0.0.1.nip.io:8108", false},
+		{"localhost.attacker.example", false},
+		{"0.0.0.0:8108", false},
+	} {
+		resp, b := sendAs(t, srv, tc.host, "/v1/chat/completions")
+		if tc.ok != (resp.StatusCode == 200) {
+			t.Errorf("Host %s: %d %s", tc.host, resp.StatusCode, b)
+			continue
+		}
+		if !tc.ok {
+			if _, code, _, _ := errorOf(t, b); resp.StatusCode != 403 || code != "host_not_allowed" {
+				t.Errorf("Host %s: %d %s", tc.host, resp.StatusCode, b)
+			}
+		}
+	}
+	if got := len(up.requests()); got != 7 {
+		t.Errorf("the provider got %d requests, want only the 7 allowed", got)
+	}
+	// Every path is checked, health endpoints included.
+	if resp, _ := sendAs(t, srv, "attacker.example", "/v1/models"); resp.StatusCode != 403 {
+		t.Errorf("/v1/models from a foreign host: %d", resp.StatusCode)
+	}
+
+	named, _, _ := gatewayFor(t, `"allowed_hosts":["gateway.internal"]`, []string{at(up, "")}, "fast=p0/mock-small")
+	if resp, _ := sendAs(t, named, "gateway.internal:443", "/v1/chat/completions"); resp.StatusCode != 200 {
+		t.Errorf("a configured host: %d", resp.StatusCode)
+	}
+	if resp, _ := sendAs(t, named, "localhost:8108", "/v1/chat/completions"); resp.StatusCode != 403 {
+		t.Errorf("localhost when only gateway.internal is allowed: %d", resp.StatusCode)
+	}
+	anyHost, _, _ := gatewayFor(t, `"allowed_hosts":["*"]`, []string{at(up, "")}, "fast=p0/mock-small")
+	if resp, _ := sendAs(t, anyHost, "attacker.example", "/v1/chat/completions"); resp.StatusCode != 200 {
+		t.Errorf(`"*": %d`, resp.StatusCode)
+	}
+}

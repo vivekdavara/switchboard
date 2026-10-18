@@ -23,7 +23,7 @@ func TestReviewAMalformedBodyIsNotAnEmpty200(t *testing.T) {
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	io.WriteString(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"+
+	io.WriteString(conn, "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"+
 		"Transfer-Encoding: chunked\r\n\r\nzz\r\n"+hello+"}\r\n0\r\n\r\n")
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
