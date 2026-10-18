@@ -13,9 +13,11 @@ test:
 build:
 	go build -o bin/ ./cmd/...
 
-# A minute of fuzzing the strict JSON reader (its seeds run in every make test).
+# A minute of each fuzz test: the strict JSON reader, and the rewrite read back as a Go provider would (their seeds
+# run in every make test). go test fuzzes one target at a time.
 fuzz:
 	go test -run '^$$' -fuzz FuzzParseObject -fuzztime 60s ./internal/jsonstrict
+	go test -run '^$$' -fuzz FuzzRewriteKeepsTheMeaning -fuzztime 60s ./internal/openai
 
 # The real binaries: two mock providers and the gateway on 8108/8118/8119, eight requests checked (CI's smoke job).
 demo:
