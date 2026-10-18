@@ -31,6 +31,11 @@ const (
 	DefaultTimeout          = 60 * time.Second
 )
 
+// MaxBytes bounds both size limits. The gateway holds a whole request and a whole answer in memory, so a limit past
+// this is a mistake, and a limit near math.MaxInt64 overflowed the gateway's limit+1 read (found in the day-1 review:
+// max_response_bytes 9223372036854775807 turned every answer into a 502).
+const MaxBytes = 1 << 30
+
 // Config is a loaded, checked configuration.
 type Config struct {
 	Listen           string
@@ -114,8 +119,14 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
 		return nil, fmt.Errorf("listen: %q is not a host:port address", c.Listen)
 	}
-	if c.MaxRequestBytes < 1 || c.MaxResponseBytes < 1 {
-		return nil, errors.New("max_request_bytes and max_response_bytes must be positive")
+	for _, size := range []struct {
+		name  string
+		value int64
+	}{{"max_request_bytes", c.MaxRequestBytes}, {"max_response_bytes", c.MaxResponseBytes}} {
+		if size.value < 1 || size.value > MaxBytes {
+			return nil, fmt.Errorf("%s must be from 1 to %d (1 GiB): the gateway holds a whole body in memory",
+				size.name, MaxBytes)
+		}
 	}
 	if grace != "" {
 		if c.ShutdownGrace, err = time.ParseDuration(grace); err != nil || c.ShutdownGrace < 0 {

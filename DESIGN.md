@@ -163,7 +163,8 @@ silent override), then decoding with unknown fields refused.
   request for the key.
 - Checked at start: names unique and non-empty; `base_url` an absolute `http` or `https` URL without credentials, a
   query or a fragment; every model's provider exists; durations parse (timeouts positive, the grace may be 0);
-  sizes positive. No error repeats a `base_url`, not even redacted: a key pasted into it can sit in the user name,
+  sizes from 1 byte to 1 GiB (the gateway holds whole bodies in memory; `math.MaxInt64` overflowed its read of the
+  answer, found in the day-1 review). No error repeats a `base_url`, not even redacted: a key pasted into it can sit in the user name,
   the password or the query, and an unparseable URL can't be redacted at all (found in the day-1 review).
 - The checked-in `configs/local.json` points at the two mock providers, so `make demo` needs no key at all. Live
   providers are opt-in: a config that names one, and its key in the environment.

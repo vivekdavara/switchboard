@@ -152,7 +152,7 @@ the request to the provider and in the log line) and `X-Switchboard-Provider`.
 }
 ```
 
-Other settings: `max_request_bytes` (default 4 MiB), `max_response_bytes` (16 MiB), a provider's `timeout`
+Other settings: `max_request_bytes` (default 4 MiB), `max_response_bytes` (16 MiB; both at most 1 GiB), a provider's `timeout`
 (default 60 s) and `api_key_env`. **No key is ever in a file:** `api_key_env` names the environment variable that
 holds it, and the gateway refuses to start if it is unset. A live provider is opt-in:
 `configs/openai.example.json` routes `gpt-4o-mini` to OpenAI with the key from `OPENAI_API_KEY`. Tests and CI use
@@ -178,7 +178,7 @@ draws per request whatever the outcome, so a run is reproducible and a higher er
 |---|---|
 | `jsonstrict` | members in order and byte for byte; repeated keys at any depth (also after unescaping); invalid UTF-8; anything but one object; the depth limit; a fuzz test that every accepted body rebuilds to itself |
 | `openai` | the acted-on fields and every way they can be wrong; keys equal to them only when case is ignored (including `ſ` for `s`), at the top level, in messages and in parts; the rewrite leaves every other byte alone; a fuzz test that a Go provider reads the forwarded body as the gateway did; the error envelope |
-| `config` | the checked-in configs load; defaults; 41 kinds of mistake, each refused with its name; no key, and nothing of a `base_url`, in any error |
+| `config` | the checked-in configs load; defaults; 44 kinds of mistake, each refused with its name; no key, and nothing of a `base_url`, in any error |
 | `mock` | exact answers and usage; `max_tokens` and `n`; validation; the key; latency lower bounds; jitter bounds; the same seed gives the same run and a higher error rate only adds failures; `Close` drops held requests |
 | `gateway` | a forward with only `model` rewritten and only the allowlisted headers; every refusal before forwarding; every row of the mapping table with a misbehaving provider; the response limit at exactly its boundary; timeouts (no answer, a trickled body); unreachable and cut-off providers; a client that leaves; the shutdown 503; the log line's facts and absences; 64 concurrent requests |
 | `cmd/...` | serving, readiness and a clean stop; a request finishing within the grace; one still running after it getting a 503; usage errors and exit codes |
