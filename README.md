@@ -135,6 +135,52 @@ What the client gets for each provider outcome:
 If the client goes away, the provider's request is cancelled too. Each response carries `X-Request-Id` (also on
 the request to the provider and in the log line) and `X-Switchboard-Provider`.
 
+## Results (day 1)
+
+Measured on an Apple M3 (8 cores), macOS 26.6.2, Go 1.27.1, **on battery** (99%, Low Power Mode off), other
+applications open, load average 3.3 to 4.1, at commit `92f8214`. Medians of 6 runs, ranges in brackets. The
+provider is the mock with no simulated latency, on loopback, and the requests are synthetic, so these are the cost
+of the HTTP hops and of the gateway's own work, not of any model.
+
+```bash
+make bench | tee run/bench.txt
+python3 scripts/bench_medians.py < run/bench.txt
+```
+
+**What the gateway adds to a request** (`BenchmarkOverhead`, one request at a time, 20,000 a run):
+
+| Request | Straight to the mock: p50 / p99 / mean | Through the gateway: p50 / p99 / mean | Added at p50 |
+|---|---|---|---|
+| one message, 79 bytes | 39 / 94 / 40.9 µs | 81 / 183 / 85.0 µs | 42 µs |
+| 20 messages, 3,997 bytes | 86 / 214.5 / 90.0 µs | 170 / 338.5 / 179.7 µs | 84 µs |
+
+The gateway's own work on the body, parsing, checking and rewriting it (`BenchmarkParseAndRewrite`), is 2.1 µs and 53
+allocations for the short request, and 35.0 µs and 397 allocations (38.9 KB) for the conversation. So of the 84 µs
+added to the conversation, about 35 are parsing; the rest, and nearly all of the short request's 42 µs, is the
+second HTTP hop. Against a real provider, which takes hundreds of milliseconds to seconds, both are under a tenth of
+a millisecond. The allocation-heavy parse is the part worth making faster; day 4's load test will show whether it
+matters under concurrency.
+
+**Keeping connections to the provider** (`BenchmarkPool`, 32 requests in flight at once, 3,000 a run):
+
+| The gateway's transport | Provider connections opened per request | Time per request | Requests a second |
+|---|---|---|---|
+| Go's default: 2 idle per host | 0.475 [0.466, 0.505] | 33.9 µs [32.3, 39.3] | about 29,500 |
+| Switchboard's: 256 idle per host | 0.0102 [0.0087, 0.0107] | 23.3 µs [22.8, 23.6] | about 42,800 |
+
+With Go's default, about every other request opens a new connection (and leaves a socket in TIME_WAIT for 30 s on
+macOS, out of 16,384 ephemeral ports); with 256 kept idle, the gateway opens about 31 connections in 3,000 requests,
+roughly one per request in flight, once. That is 45% more requests a second. `TestTheGatewayKeepsItsProviderConnections`
+pins the behaviour: after 32 requests at once, the next 32 open 0 connections (30 with Go's default). Over HTTP/2,
+which the gateway uses for https providers, one connection carries many requests and the difference shrinks.
+
+**Fuzzing:** `FuzzParseObjectAgreesWithItsOwnOutput` ran 2,355,061 inputs in 21 s with no failure (`go test -run
+'^$' -fuzz FuzzParseObject -fuzztime 20s ./internal/jsonstrict`, at `7016e51`); `FuzzRewriteKeepsTheMeaning` ran
+1,044,560 inputs in 30 s with no failure (`-fuzztime 30s`, at `60c3a8e`, after a 60 s run whose count wasn't kept).
+
+**Compatibility:** `make demo` passes its eight curl checks and the eight checks of the official OpenAI Python SDK
+(openai 3.35.1) here and in CI.
+
 ## Configuration
 
 `configs/local.json` routes three models to the two mocks:
