@@ -32,7 +32,7 @@ jobs:
 
   smoke:
     # The real binaries on their real ports: scripts/demo.sh starts two mock providers and the gateway, checks eight
-    # requests' answers, and fails if any differs.
+    # requests' answers with curl and six with the official OpenAI Python SDK, and fails if any differs.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -40,7 +40,14 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: The OpenAI SDK
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q -r scripts/requirements-sdk.txt
       - name: Demo
+        env:
+          # Set, so a broken SDK install fails the job instead of skipping the SDK's checks.
+          SDK_PYTHON: .venv/bin/python
         run: scripts/demo.sh
       - name: Logs
         if: failure()

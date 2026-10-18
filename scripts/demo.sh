@@ -2,6 +2,10 @@
 # Runs the real binaries: two mock providers (8118, 8119) and the gateway (8108, configs/local.json), sends a few
 # requests through the gateway, checks each answer, and stops everything. CI runs it as a smoke test; `make demo`
 # runs it here. Logs go to run/ (gitignored). Needs curl.
+#
+# With the official OpenAI Python SDK it also runs scripts/sdk_check.py: set SDK_PYTHON to a Python that has
+# scripts/requirements-sdk.txt installed (CI does), or have it in .venv (python3.11 -m venv .venv &&
+# .venv/bin/pip install -r scripts/requirements-sdk.txt).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -63,6 +67,16 @@ mapfile -d '' args < <(chat '{"model":"fast","model":"smart","messages":[]}')
 check "a model given twice"         400 '"code":"invalid_json"'   "${args[@]}"
 check "a form post"                 415 '"code":"unsupported_media_type"' \
   -X POST "$GATEWAY/v1/chat/completions" -d "$(ask fast)"
+
+sdk_python=${SDK_PYTHON:-}
+if [[ -z $sdk_python && -x .venv/bin/python ]] && .venv/bin/python -c 'import openai' 2>/dev/null; then
+  sdk_python=.venv/bin/python
+fi
+if [[ -n $sdk_python ]]; then
+  "$sdk_python" scripts/sdk_check.py || failures=$((failures + 1))
+else
+  echo "skip  the OpenAI SDK checks: no SDK_PYTHON and no .venv with openai"
+fi
 
 kill "$mock_b"
 wait "$mock_b" 2>/dev/null || true
