@@ -257,3 +257,17 @@ As built on day 1, beyond that plan:
 - **Day 4:** Prometheus metrics, structured logs; a load test against the mocks (latency overhead, throughput); a
   chaos run with one provider down, measuring fallback.
 - **Day 5:** README with results, WALKTHROUGH.md, v1.0.0.
+
+What day 1 leaves for them to respect:
+
+- A retry is the gateway's decision, made once and counted (day 2's budget). Never add an `Idempotency-Key` or
+  `X-Idempotency-Key` header upstream: net/http would then resend a broken POST by itself, and a provider would bill
+  it twice (`TestAForwardedRequestIsNeverResentByTheTransport` fails if one appears).
+- Fallback must not resend to a provider after it may have started work on a request it then failed to answer,
+  unless the budget says so: a timeout or a cut-off answer is not proof that nothing was billed.
+- Streaming needs no `WriteTimeout` (the server has none) and a flush per event; the 499 and shutdown paths must
+  still never end in an empty 200, and a stream cut off mid-way can't become a 502 once its headers are out.
+- The parse is 35 µs and 397 allocations for a 4 KB conversation (README "Results"): day 4's load test decides
+  whether it needs a faster reader.
+- The mock's fates come from fixed draws; any new behaviour it gets (streaming, a slow body) should draw from the
+  reserved fourth number or add draws at the end, so runs at different rates still compare request for request.
