@@ -239,7 +239,9 @@ func TestARequestIsForwardedWithOnlyTheModelRewrittenAndAnsweredByteForByte(t *t
 		!strings.Contains(c.Choices[0].Message.Content, "What is two plus two?") {
 		t.Errorf("answer %s", answer)
 	}
-	// Byte for byte: ask the mock directly for the next answer and compare all but the id.
+	// The same request again: the mock's answer differs only in its id. (This compares two answers through the
+	// gateway, so it shows the forward is repeatable, not that it is byte for byte; the mapping table's "an answer"
+	// row checks that the client gets exactly the provider's bytes. The day-1 review caught the old comment.)
 	resp2, again := send(t, srv, body)
 	if resp2.StatusCode != 200 || !bytes.Equal(bytes.Replace(again, []byte("000002"), []byte("000001"), 1), answer) {
 		t.Errorf("answers differ beyond the id:\n%s\n%s", answer, again)

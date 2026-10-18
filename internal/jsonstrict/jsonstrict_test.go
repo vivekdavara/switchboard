@@ -118,9 +118,13 @@ func TestNestingIsBoundedByMaxDepth(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "nests deeper") {
 		t.Errorf("%d levels: got %v, want a depth error", MaxDepth+1, err)
 	}
-	// Objects count the same as arrays.
-	objects := `{"a":` + strings.Repeat(`{"a":`, MaxDepth) + "1" + strings.Repeat("}", MaxDepth) + "}"
-	if _, err := ParseObject([]byte(objects)); err == nil {
+	// Objects count the same as arrays: exactly MaxDepth of them is fine, one more isn't. (The day-1 review
+	// counted nested objects twice and no test noticed: only the refusal was tested.)
+	objects := func(n int) string { return strings.Repeat(`{"a":`, n) + "1" + strings.Repeat("}", n) }
+	if _, err := ParseObject([]byte(objects(MaxDepth))); err != nil {
+		t.Errorf("%d nested objects: %v", MaxDepth, err)
+	}
+	if _, err := ParseObject([]byte(objects(MaxDepth + 1))); err == nil {
 		t.Errorf("%d nested objects: accepted", MaxDepth+1)
 	}
 }

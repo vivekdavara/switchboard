@@ -72,6 +72,8 @@ func TestInvalidRequestsAre400sNamingTheParameter(t *testing.T) {
 		{`{"model":"m","messages":{"role":"user"}}`, "messages", "invalid_type"},
 		{`{"model":"m","messages":[]}`, "messages", "empty_array"},
 		{`{"model":"m","messages":["hi"]}`, "messages[0]", "invalid_type"},
+		{`{"model":"m","messages":[null]}`, "messages[0]", "invalid_type"}, // not "has no role"
+		{`{"model":"m","messages":[` + user + `,7]}`, "messages[1]", "invalid_type"},
 		{`{"model":"m","messages":[` + user + `,{"content":"x"}]}`, "messages[1].role", "missing_required_parameter"},
 		{`{"model":"m","messages":[{"role":"robot","content":"x"}]}`, "messages[0].role", "invalid_value"},
 		{`{"model":"m","messages":[{"role":"User","content":"x"}]}`, "messages[0].role", "invalid_value"},
