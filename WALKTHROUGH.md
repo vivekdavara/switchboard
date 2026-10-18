@@ -155,8 +155,11 @@ at that point showed the window: 3 of 3 failures. My second version reset the si
 survived that delay, but the second review sent the two signals back to back and it swallowed the second 10 times in
 10 (3 in 10 after I buffered two): a signal still pending inside the Go runtime when `signal.Reset` runs is dropped.
 The third keeps receiving after the first signal and, when a second comes, resets and raises it again; 20 of 20 runs
-of both tests, with 8 CPUs and with 2. Lessons: "after X happens" across two goroutines is not an order; and turning
-a mechanism off is itself an event that something can arrive in the middle of.
+of both tests, with 8 CPUs and with 2. A third review then sent the *same* signal twice back to back and the stop went
+on: the kernel and Go's runtime keep one pending flag per signal number, so the two merge before any code runs.
+Nothing can fix that, so the docs say it, and the test checks the same signal again once the first was taken, which
+is what a person's second Ctrl-C is. Lessons: "after X happens" across two goroutines is not an order; turning a
+mechanism off is itself an event that something can arrive in the middle of; and signals aren't a queue.
 
 **Why loopback by default?**
 There are no client keys until day 3, so anyone who can reach the port can spend the providers' keys. The default

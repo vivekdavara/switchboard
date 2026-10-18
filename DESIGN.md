@@ -158,6 +158,11 @@ no target is left does the client see them.
   second arrives passed 20 of 20 runs of each test, with 8 CPUs and with 2. The re-raise goes through
   `os.Process.Signal`, which builds everywhere (`syscall.Kill` broke the Windows build, found by cross-compiling by
   hand; CI cross-compiles now); Windows, where a process can't send itself an interrupt, exits 130 instead.
+  One case no code can handle: the *same* signal sent twice back to back (two `kill -INT` in a row) can count as
+  one, because the kernel and Go's runtime each keep one pending flag per signal number, so the second merges into
+  the first before anything sees it. The third review sent identical pairs and the stop went on 10 times in 10. A
+  second signal of the other kind, or the same one once the first was taken (a person's second Ctrl-C), always
+  ends the process; the test covers all three.
 
 ## Connections to providers
 

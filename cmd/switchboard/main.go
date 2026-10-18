@@ -43,6 +43,8 @@ func main() {
 		// handling at the first one, as an earlier fix did, dropped a second one still pending inside the runtime
 		// (the second review sent them back to back: 10 of 10 swallowed, and 3 of 10 after a first repair). Raise
 		// it again with the default handling, which kills the process; exit 130 if it was ignored when we started.
+		// (The same signal twice back to back can still count as one: the kernel and the runtime keep one pending
+		// flag per signal number. A second signal sent after the first was taken always arrives here.)
 		sig := <-sigs
 		signal.Reset(os.Interrupt, syscall.SIGTERM)
 		// os.Process.Signal, not syscall.Kill: it builds on every platform (syscall.Kill broke the Windows build;

@@ -267,7 +267,8 @@ limit changes nothing (the size check still catches it). The commit messages lis
 - **Stop in steps.** `/readyz` turns 503 and the gateway keeps serving for `drain_delay` (so a load balancer can
   stop sending first); then requests get the grace to finish; the ones still running are then cancelled through the
   server's base context with a shutdown cause, which cancels their provider requests and lets each answer 503.
-  `http.Server.Shutdown` alone returns at its deadline with handlers still running. A second Ctrl-C ends it at once.
+  `http.Server.Shutdown` alone returns at its deadline with handlers still running. A second Ctrl-C ends it at once
+  (two identical signals sent back to back by a program can merge into one; DESIGN.md says why).
 - **No dependencies.** The standard library covers day 1; Redis and Prometheus come with days 3 and 4.
 
 ## Limitations (day 1)
