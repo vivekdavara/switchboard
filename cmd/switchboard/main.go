@@ -1,0 +1,187 @@
+// Command switchboard runs the gateway.
+//
+//	switchboard serve -config FILE   serve until SIGINT or SIGTERM
+//	switchboard check -config FILE   load and check the configuration, print the routes, and exit
+//	switchboard version              print the version, the commit and the Go release, and exit
+//
+// The configuration is a JSON file (DESIGN.md, "Configuration"); provider keys come from the environment variables
+// it names. Logs are JSON lines on stderr, one per request. A usage error exits 2; a configuration that doesn't load
+// or a port that won't open exits 1; a stop by signal exits 0, whether or not every request finished in the grace.
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"runtime"
+	"runtime/debug"
+	"syscall"
+	"time"
+
+	"github.com/vivekdavara/switchboard/internal/config"
+	"github.com/vivekdavara/switchboard/internal/gateway"
+)
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	os.Exit(run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr, nil))
+}
+
+const usage = "usage: switchboard serve -config FILE | check -config FILE | version"
+
+// Server timeouts (DESIGN.md, "Timeouts and shutdown"). No WriteTimeout: a streamed answer can rightly take minutes.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 60 * time.Second
+	idleTimeout       = 120 * time.Second
+	// finishWriting is how long requests cancelled at the end of the grace get to write their 503s before the
+	// connections close.
+	finishWriting = time.Second
+)
+
+// run is main without the process, so tests can drive it: it returns the exit code, and stops serving when ctx is
+// cancelled. If listening isn't nil it receives the address once the port is open.
+func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer,
+	listening chan<- string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	switch args[0] {
+	case "version":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		fmt.Fprintln(stdout, version())
+		return 0
+	case "serve", "check":
+	default:
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	fs := flag.NewFlagSet("switchboard "+args[0], flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("config", "", "the configuration file (JSON)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if *path == "" || fs.NArg() > 0 {
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	cfg, err := config.Load(*path, getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, "switchboard:", err)
+		return 1
+	}
+	if args[0] == "check" {
+		printRoutes(stdout, cfg)
+		return 0
+	}
+	return serve(ctx, cfg, slog.New(slog.NewJSONHandler(stderr, nil)), listening)
+}
+
+func printRoutes(w io.Writer, cfg *config.Config) {
+	fmt.Fprintf(w, "listen %s, shutdown grace %s, request limit %d bytes, response limit %d bytes\n", cfg.Listen,
+		cfg.ShutdownGrace, cfg.MaxRequestBytes, cfg.MaxResponseBytes)
+	for _, p := range cfg.Providers {
+		key := "no key"
+		if p.APIKeyEnv != "" {
+			key = "key from " + p.APIKeyEnv
+		}
+		fmt.Fprintf(w, "provider %s: %s, timeout %s, %s\n", p.Name, p.BaseURL, p.Timeout, key)
+	}
+	for _, m := range cfg.Models {
+		fmt.Fprintf(w, "model %s -> %s as %s\n", m.Name, m.Provider.Name, m.UpstreamModel)
+	}
+}
+
+func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, listening chan<- string) int {
+	ln, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		log.Error("listen", "err", err)
+		return 1
+	}
+	g := gateway.New(cfg, nil, log)
+	// Every request's context derives from base, so cancelling it (with gateway.ErrShutdown as the cause) cancels
+	// every request still running when the grace is over, and their upstream requests with them.
+	base, cancelAll := context.WithCancelCause(context.Background())
+	defer cancelAll(nil)
+	srv := &http.Server{
+		Handler:           g,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
+		BaseContext:       func(net.Listener) context.Context { return base },
+		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ln) }()
+	g.SetReady(true)
+	providers := make([]string, len(cfg.Providers))
+	for i, p := range cfg.Providers {
+		providers[i] = p.Name
+	}
+	models := make([]string, len(cfg.Models))
+	for i, m := range cfg.Models {
+		models[i] = m.Name
+	}
+	log.Info("listening", "addr", ln.Addr().String(), "providers", providers, "models", models)
+	if listening != nil {
+		listening <- ln.Addr().String()
+	}
+
+	select {
+	case err := <-served: // Serve returns early only if the listener fails
+		log.Error("serve", "err", err)
+		return 1
+	case <-ctx.Done():
+	}
+	g.SetReady(false)
+	log.Info("stopping", "grace", cfg.ShutdownGrace.String())
+	grace, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
+	defer cancel()
+	// Shutdown closes the listener and waits for requests in flight, but returns at its deadline with handlers
+	// still running. Then cancel them (each writes a 503 if its client is still there), give them a moment to
+	// write it, and close every connection.
+	clean := srv.Shutdown(grace) == nil
+	if !clean {
+		cancelAll(gateway.ErrShutdown)
+		finish, cancel := context.WithTimeout(context.Background(), finishWriting)
+		defer cancel()
+		srv.Shutdown(finish)
+		srv.Close()
+	}
+	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
+		log.Error("serve", "err", err)
+	}
+	log.Info("stopped", "clean", clean)
+	return 0
+}
+
+// version says which switchboard this is: the module version the go command stamps from git (a tag such as v1.0.0
+// when built at it, a pseudo-version after it, "(devel)" for go run and go test), the commit, and the Go release.
+func version() string {
+	v, commit := "(devel)", "unknown"
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if info.Main.Version != "" {
+			v = info.Main.Version
+		}
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" && len(s.Value) >= 12 {
+				commit = s.Value[:12]
+			}
+		}
+	}
+	return fmt.Sprintf("switchboard %s (commit %s, %s %s/%s)", v, commit, runtime.Version(), runtime.GOOS,
+		runtime.GOARCH)
+}
