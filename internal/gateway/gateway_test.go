@@ -567,6 +567,37 @@ func TestAForwardedRequestIsNeverResentByTheTransport(t *testing.T) {
 	}
 }
 
+// Real providers are https. NewTransport keeps Go's default of attempting HTTP/2 there (a clone of the default
+// transport, ForceAttemptHTTP2 set), which also survives giving it a TLS configuration of its own, as this test does
+// to trust the test server's certificate.
+func TestAnHTTPSProviderIsReachedOverHTTP2(t *testing.T) {
+	var proto atomic.Value
+	m := mockProvider(t, "mock-a")
+	up := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proto.Store(r.Proto)
+		m.ServeHTTP(w, r)
+	}))
+	up.EnableHTTP2 = true
+	up.StartTLS()
+	t.Cleanup(up.Close)
+
+	cfg, err := config.Parse([]byte(fmt.Sprintf(`{"providers":[{"name":"tls","base_url":%q}],`+
+		`"models":[{"name":"fast","provider":"tls","upstream_model":"mock-small"}]}`, up.URL+"/v1")), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTransport()
+	tr.TLSClientConfig = up.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	srv := httptest.NewServer(New(cfg, tr, slog.New(slog.NewJSONHandler(io.Discard, nil))))
+	t.Cleanup(srv.Close)
+	if resp, b := send(t, srv, ask); resp.StatusCode != 200 {
+		t.Fatalf("%d %s", resp.StatusCode, b)
+	}
+	if got := proto.Load(); got != "HTTP/2.0" {
+		t.Errorf("the provider was reached over %v", got)
+	}
+}
+
 func TestAClientThatGoesAwayCancelsTheProvidersRequest(t *testing.T) {
 	cancelled := make(chan struct{}, 1)
 	up := newProvider(t, waiting(cancelled))
