@@ -141,8 +141,16 @@ Telling a load balancer to stop sending before the port closes. On a stop, `/rea
 closes the listener in the same instant, so the first version's 503 could never be seen: a probe got "connection
 refused" (found in review). With `drain_delay`, the gateway keeps serving everything for that long with `/readyz` at
 503, then closes. It defaults to 0 because there's no balancer in front of a laptop. A second Ctrl-C ends the process
-at once, mid-drain or mid-grace: `main` gives signals back their default handling after the first
-(`TestASecondSignalEndsTheProcessAtOnce` runs the real binary).
+at once, mid-drain or mid-grace: on the first, `main` gives signals back their default handling, then starts the
+stop (`TestASecondSignalEndsTheProcessAtOnce` runs the real binary).
+
+**Tell me about a test that passed locally and failed in CI.**
+That one. My first version handed signals back in a goroutine woken by the same cancelled context as the stop. It
+passed 20 of 20 runs on my laptop and failed once on a 2-CPU CI runner: the drain started and logged, the test sent
+its second signal, and the hand-back hadn't run yet, so the signal was swallowed. To show it was that window and not
+something else, I put a 100 ms delay at that point: the old order failed 3 of 3, the new order (reset the signals,
+then cancel) passed 3 of 3. The lesson: "after X happens" across two goroutines is not an order; do the two things
+in sequence in one.
 
 **Why loopback by default?**
 There are no client keys until day 3, so anyone who can reach the port can spend the providers' keys. The default
