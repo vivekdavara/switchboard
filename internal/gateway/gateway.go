@@ -77,9 +77,15 @@ func NewTransport() *http.Transport {
 // SetReady says whether GET /readyz answers 200.
 func (g *Gateway) SetReady(ready bool) { g.ready.Store(ready) }
 
-// ServeHTTP answers a request whose Host is allowed (config.AllowedHosts).
+// ServeHTTP answers a request whose Host is allowed (config.AllowedHosts). The health endpoints answer any Host: a
+// load balancer probes by address (Host: 10.0.0.5:8108), /readyz's 503 during a drain exists for it, and what they
+// say is no secret to a rebinding page. A refusal is logged, so an operator sees rebinding attempts (both found in
+// the day-1 second review).
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !g.hostAllowed(r.Host) {
+	health := r.URL.Path == "/livez" || r.URL.Path == "/readyz"
+	if !health && !g.hostAllowed(r.Host) {
+		g.log.Warn("host not allowed", "host", r.Host, "method", r.Method, "path", r.URL.Path,
+			"remote", r.RemoteAddr)
 		openai.WriteError(w, openai.Errorf(http.StatusForbidden, openai.TypeInvalidRequest, "", "host_not_allowed",
 			"the Host %q is not one this gateway answers to (allowed_hosts)", r.Host))
 		return

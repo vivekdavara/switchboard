@@ -36,8 +36,8 @@ circuit breakers; day 3 puts Redis (port 6382) beside the gateway for rate limit
 | `POST /v1/chat/completions` | Forwards a chat completion to the model's provider. `stream: true` is refused with 400 until day 2. |
 | `GET /v1/models` | The models this gateway serves, in OpenAI's list shape. |
 | `GET /v1/models/{model}` | One of them, or 404 `model_not_found`. Added while building: the OpenAI SDK's `models.retrieve` calls it. |
-| `GET /livez` | 200 while the process runs. |
-| `GET /readyz` | 200 once the configuration is loaded and the listener is open; 503 during a stop's `drain_delay`. |
+| `GET /livez` | 200 while the process runs, whatever the `Host`. |
+| `GET /readyz` | 200 once the configuration is loaded and the listener is open; 503 during a stop's `drain_delay`. Any `Host`. |
 
 Every error from the API's endpoints, the gateway's own included, has OpenAI's error shape, so SDKs read it like
 any other API error (the health endpoints answer in plain text, and so does net/http itself when it refuses a request
@@ -58,7 +58,9 @@ An unknown path is 404 and a known path with the wrong method is 405 with an `Al
    its `Host` header still names its own domain. (Suspected in the day-1 review; a request with `Host:
    attacker.example:8108` was answered 200 until this check.) A request with no `Host` (HTTP/1.0, as health checkers
    send) passes, since no browser sends one, and IP addresses compare as addresses (`[0:0:0:0:0:0:0:1]` is `::1`,
-   `[::ffff:127.0.0.1]` is `127.0.0.1`); the second review found both refused.
+   `[::ffff:127.0.0.1]` is `127.0.0.1`); the second review found both refused. The health endpoints answer any
+   `Host` (a load balancer probes by address, and `/readyz`'s drain exists for it), and every refusal is logged
+   (`host not allowed`, with the host and path), so rebinding attempts show.
 1. **Content type.** The request must say `Content-Type: application/json` (parameters such as `charset=utf-8` are
    fine), or it gets 415. This is not pedantry: a web page can make a browser send a cross-origin POST without asking
    the server first only if its content type is a form's or `text/plain`, and a form can be written so that its

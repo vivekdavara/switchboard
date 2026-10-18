@@ -5,7 +5,8 @@
 //	switchboard version              print the version, the commit and the Go release, and exit
 //
 // The configuration is a JSON file (DESIGN.md, "Configuration"); provider keys come from the environment variables
-// it names. Logs are JSON lines on stderr: one per chat completion, and the server's own. A usage error exits 2; a configuration that doesn't load or a port that won't open exits 1; a stop by
+// it names. Logs are JSON lines on stderr: one per chat completion, one per request refused for its Host, and the
+// server's own. A usage error exits 2; a configuration that doesn't load or a port that won't open exits 1; a stop by
 // SIGINT or SIGTERM exits 0, whether or not every request finished in the grace, and a second signal during the stop
 // ends the process at once, by that signal.
 package main

@@ -779,7 +779,7 @@ func sendAs(t *testing.T, srv *httptest.Server, host, path string) (*http.Respon
 // day-1 review; before the check, a request with Host attacker.example:8108 got a 200 and reached the provider.
 func TestOnlyAllowedHostsAreAnswered(t *testing.T) {
 	up := newProvider(t, mockProvider(t, "mock-a"))
-	srv, _, _ := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small")
+	srv, _, logs := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small")
 	for _, tc := range []struct {
 		host string
 		ok   bool
@@ -813,9 +813,31 @@ func TestOnlyAllowedHostsAreAnswered(t *testing.T) {
 	if got := len(up.requests()); got != 9 {
 		t.Errorf("the provider got %d requests, want only the 9 allowed", got)
 	}
-	// Every path is checked, health endpoints included.
-	if resp, _ := sendAs(t, srv, "attacker.example", "/v1/models"); resp.StatusCode != 403 {
-		t.Errorf("/v1/models from a foreign host: %d", resp.StatusCode)
+	// Every API path is checked; the health endpoints answer any Host, since load balancers probe by address.
+	get := func(host, path string) int {
+		req, _ := http.NewRequest("GET", srv.URL+path, nil)
+		req.Host = host
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := get("attacker.example", "/v1/models"); got != 403 {
+		t.Errorf("/v1/models from a foreign host: %d", got)
+	}
+	if got := get("attacker.example", "/v1/models/fast"); got != 403 {
+		t.Errorf("/v1/models/fast from a foreign host: %d", got)
+	}
+	if got := get("10.0.0.5:8108", "/livez"); got != 200 {
+		t.Errorf("/livez probed by address: %d", got)
+	}
+	if got := get("10.0.0.5:8108", "/readyz"); got != 503 { // not 403: the gateway isn't ready in this test
+		t.Errorf("/readyz probed by address: %d", got)
+	}
+	if !strings.Contains(logs.String(), `"msg":"host not allowed","host":"attacker.example:8108"`) {
+		t.Errorf("no log line for a refused Host:\n%s", logs)
 	}
 
 	named, _, _ := gatewayFor(t, `"allowed_hosts":["gateway.internal"]`, []string{at(up, "")}, "fast=p0/mock-small")
