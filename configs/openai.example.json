@@ -1,0 +1,11 @@
+{
+  "listen": "127.0.0.1:8108",
+  "providers": [
+    {"name": "openai", "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY", "timeout": "120s"},
+    {"name": "mock-a", "base_url": "http://127.0.0.1:8118/v1", "timeout": "10s"}
+  ],
+  "models": [
+    {"name": "gpt-4o-mini", "provider": "openai"},
+    {"name": "fast", "provider": "mock-a", "upstream_model": "mock-small"}
+  ]
+}

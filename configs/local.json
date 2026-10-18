@@ -1,0 +1,13 @@
+{
+  "listen": "127.0.0.1:8108",
+  "shutdown_grace": "10s",
+  "providers": [
+    {"name": "mock-a", "base_url": "http://127.0.0.1:8118/v1", "timeout": "10s"},
+    {"name": "mock-b", "base_url": "http://127.0.0.1:8119/v1", "timeout": "10s"}
+  ],
+  "models": [
+    {"name": "fast", "provider": "mock-a", "upstream_model": "mock-small"},
+    {"name": "smart", "provider": "mock-b", "upstream_model": "mock-large"},
+    {"name": "mock-small", "provider": "mock-a"}
+  ]
+}
