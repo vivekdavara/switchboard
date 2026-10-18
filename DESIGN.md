@@ -146,12 +146,14 @@ no target is left does the client see them.
   at the moment of a stop can fail with a reset rather than a 503; clients retry it like any connection error.
   Draining (`drain_delay` with a load balancer that polls `/readyz`) is the cure; with no balancer in front, a client
   retries the reset like any connection error.
-- A second SIGINT or SIGTERM ends the process at once, mid-drain or mid-grace: on the first, `main` gives signals
-  back their default handling and only then starts the stop (`NotifyContext` would catch every later one until
-  `main` returned; a suspicion of the day-1 review). `TestASecondSignalEndsTheProcessAtOnce` runs the real binary to
-  check it. The first fix handed signals back after starting the stop, in a goroutine racing the drain, and CI once
-  caught the second signal swallowed; with a 100 ms delay at that point, that order fails 3 of 3 runs and this one
-  passes.
+- A second SIGINT or SIGTERM ends the process at once, mid-drain or mid-grace, by that signal: `main` keeps
+  receiving signals after the first, and raises the second again with Go's default handling (`NotifyContext` would
+  catch every later one until `main` returned; a suspicion of the day-1 review). Two tests run the real binary: one
+  sends the second signal once the drain has started, one sends both back to back. It took three tries. Handing
+  signals back in a goroutine woken by the stop's own context raced the drain (CI caught it once; a 100 ms delay
+  there failed 3 of 3 runs). Handing them back at the first signal dropped a second one still pending inside the
+  runtime (back to back: 10 of 10 swallowed, 3 of 10 with two CPUs after buffering two). Keeping them on until the
+  second arrives passed 20 of 20 runs of each test, with 8 CPUs and with 2.
 
 ## Connections to providers
 

@@ -5,8 +5,9 @@
 //	switchboard version              print the version, the commit and the Go release, and exit
 //
 // The configuration is a JSON file (DESIGN.md, "Configuration"); provider keys come from the environment variables
-// it names. Logs are JSON lines on stderr, one per request. A usage error exits 2; a configuration that doesn't load
-// or a port that won't open exits 1; a stop by signal exits 0, whether or not every request finished in the grace.
+// it names. Logs are JSON lines on stderr: one per chat completion, and the server's own. A usage error exits 2; a configuration that doesn't load or a port that won't open exits 1; a stop by
+// SIGINT or SIGTERM exits 0, whether or not every request finished in the grace, and a second signal during the stop
+// ends the process at once, by that signal.
 package main
 
 import (
@@ -31,16 +32,21 @@ import (
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	sigs := make(chan os.Signal, 1)
+	sigs := make(chan os.Signal, 2)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigs
-		// The first signal starts the stop. Signals get Go's default handling back first, then the stop starts, so
-		// a second one ends the process at once, mid-drain or mid-grace, as an operator pressing Ctrl-C twice
-		// expects. (signal.NotifyContext swallowed every later signal until main returned; and handing them back
-		// after the cancel, as the first fix did, raced with the stop: CI once saw the second signal caught.)
+		cancel() // the first signal starts the stop
+		// A second one ends the process at once, mid-drain or mid-grace, as an operator pressing Ctrl-C twice
+		// expects. Notification stays on until it comes, so it can't be lost: handing signals back to Go's default
+		// handling at the first one, as an earlier fix did, dropped a second one still pending inside the runtime
+		// (the second review sent them back to back: 10 of 10 swallowed, and 3 of 10 after a first repair). Raise
+		// it again with the default handling, which kills the process; exit 130 if it was ignored when we started.
+		sig := <-sigs
 		signal.Reset(os.Interrupt, syscall.SIGTERM)
-		cancel()
+		syscall.Kill(os.Getpid(), sig.(syscall.Signal))
+		time.Sleep(time.Second)
+		os.Exit(130)
 	}()
 	os.Exit(run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr, nil))
 }
