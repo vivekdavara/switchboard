@@ -155,7 +155,9 @@ no target is left does the client see them.
   signals back in a goroutine woken by the stop's own context raced the drain (CI caught it once; a 100 ms delay
   there failed 3 of 3 runs). Handing them back at the first signal dropped a second one still pending inside the
   runtime (back to back: 10 of 10 swallowed, 3 of 10 with two CPUs after buffering two). Keeping them on until the
-  second arrives passed 20 of 20 runs of each test, with 8 CPUs and with 2.
+  second arrives passed 20 of 20 runs of each test, with 8 CPUs and with 2. The re-raise goes through
+  `os.Process.Signal`, which builds everywhere (`syscall.Kill` broke the Windows build, found by cross-compiling by
+  hand; CI cross-compiles now); Windows, where a process can't send itself an interrupt, exits 130 instead.
 
 ## Connections to providers
 
