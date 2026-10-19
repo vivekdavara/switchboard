@@ -46,7 +46,13 @@ type eventReader struct {
 	r     *bufio.Reader
 	limit int64
 	read  int64
+	begun bool // the first line has been read: a byte order mark may come only before it
 }
+
+// bom is the byte order mark the SSE spec allows at the start of a stream ("stream = [ bom ] *event"), which a
+// reader ignores. (Not ignoring it made a provider's first chunk a line of no known field; found in the second
+// day-2 review.)
+var bom = []byte("\xef\xbb\xbf")
 
 func newEventReader(body io.Reader, limit int64) *eventReader {
 	return newEventReaderSize(body, limit, 32<<10)
@@ -71,8 +77,12 @@ func (er *eventReader) next() (sseEvent, error) {
 			}
 			return ev, err
 		}
-		ev.raw = append(ev.raw, line...)
+		ev.raw = append(ev.raw, line...) // the BOM too, if any: the client's stream then starts with it as well
 		text := bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
+		if !er.begun {
+			er.begun = true
+			text = bytes.TrimPrefix(text, bom)
+		}
 		if len(text) == 0 {
 			if len(ev.raw) == len(line) { // a blank line with no event before it: nothing to dispatch
 				ev.raw = ev.raw[:0]
@@ -87,6 +97,8 @@ func (er *eventReader) next() (sseEvent, error) {
 		}
 		if v, ok := bytes.CutPrefix(text, []byte("data:")); ok {
 			data = append(data, bytes.TrimPrefix(v, []byte(" ")))
+		} else if bytes.Equal(text, []byte("data")) { // a field with no colon has an empty value (the SSE spec)
+			data = append(data, []byte{})
 		}
 	}
 }
