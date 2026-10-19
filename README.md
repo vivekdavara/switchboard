@@ -336,7 +336,8 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (131 test and fuzz functions, about 7 s);
+`make check` runs gofmt, `go vet` and `go test -race` over every package (149 test and fuzz functions, about 10 s;
+coverage 96.4% across packages with `go test -coverpkg=./...`);
 CI runs the same on Ubuntu 24.04, then `make demo`'s script with the SDK checks as a second job.
 
 | Package | What the tests pin down |

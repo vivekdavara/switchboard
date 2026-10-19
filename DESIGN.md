@@ -209,7 +209,7 @@ when the stream ends: a half-open breaker whose probe was a stream stayed half-o
 skipped the healthy provider as `circuit_open`, for as long as one client cared to read (found in the day-2 review).
 Now the first event is reported as the success it is, at the commit; a break after that counts through
 `Breaker.Fail`, as a failure seen then (one more in a row while closed; nothing while open, or while half-open, where
-a probe decides). `TestEachOutcomeTellsTheBreakerWhatItShould` makes 19 kinds of answer a probe and checks the
+a probe decides). `TestEachOutcomeTellsTheBreakerWhatItShould` makes 21 kinds of answer a probe and checks the
 verdict of each.
 
 **Generations.** Every change of state starts a new generation, and a result counts only in the generation its
