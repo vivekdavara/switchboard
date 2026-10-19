@@ -1,0 +1,4 @@
+go test fuzz v1
+[]byte("data: \n\n0")
+uint16(1000)
+byte('_')

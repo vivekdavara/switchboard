@@ -48,7 +48,13 @@ type eventReader struct {
 }
 
 func newEventReader(body io.Reader, limit int64) *eventReader {
-	return &eventReader{r: bufio.NewReaderSize(body, 32<<10), limit: limit}
+	return newEventReaderSize(body, limit, 32<<10)
+}
+
+// newEventReaderSize is newEventReader with a buffer of size bytes (at least 16), so the fuzz test can make lines
+// longer than the buffer common.
+func newEventReaderSize(body io.Reader, limit int64, size int) *eventReader {
+	return &eventReader{r: bufio.NewReaderSize(body, size), limit: limit}
 }
 
 // next returns the next event. At the end of the stream it returns io.EOF if nothing of an event was read, and
@@ -72,7 +78,9 @@ func (er *eventReader) next() (sseEvent, error) {
 				continue
 			}
 			if data != nil {
-				ev.data = bytes.Join(data, []byte("\n"))
+				// Never nil for an event with a data line, even an empty one ("data:" is an event whose data is
+				// ""): bytes.Join of one empty value returns nil (FuzzEventReaderAgreesWithTheReference found it).
+				ev.data = append([]byte{}, bytes.Join(data, []byte("\n"))...)
 			}
 			return ev, nil
 		}
