@@ -158,10 +158,20 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 		}
 		first = ev
 	}
-	// An error as the first event is the provider saying no, as a status would: another target may be tried.
-	if e, ok := streamError(first.data); ok {
+	// The first data event must be the start of an answer. An error object is the provider saying no, as a status
+	// would: another target may be tried. [DONE] with nothing before it is a stream with no answer in it, and
+	// anything but a JSON object is no chunk: like a 200 without JSON, the provider may have done the work. (A
+	// [DONE]-only stream committed an empty 200 and told the breaker it succeeded, found in the day-2 review.)
+	switch e, isError := streamError(first.data); {
+	case isError:
 		return result{kind: failed, health: unhealthy, err: upstreamError(http.StatusBadGateway, "upstream_error",
 			"the provider %s answered its stream with an error: %s", p.Name, e)}
+	case first.done():
+		return result{kind: unanswered, health: unhealthy, err: upstreamError(http.StatusBadGateway,
+			"upstream_error", "the provider %s ended its stream before its first chunk", p.Name)}
+	case !jsonObject(first.data):
+		return result{kind: unanswered, health: unhealthy, err: upstreamError(http.StatusBadGateway,
+			"upstream_error", "the provider %s streamed a first event that isn't a JSON chunk", p.Name)}
 	}
 
 	// The first event commits the response.

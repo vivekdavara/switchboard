@@ -407,10 +407,11 @@ func TestASlowClientIsNotTheProvidersTimeout(t *testing.T) {
 	// The provider streams 8 MB at once; the client takes the first event, then reads nothing for longer than the
 	// provider's timeout, so the gateway's writes block. The timeout is the provider's: waiting on the client isn't
 	// the provider making no progress, and mustn't cut the stream or count against its breaker.
-	big := strings.Repeat("y", 4000)
+	big := `data: {"id":"c","object":"chat.completion.chunk","choices":[],"pad":"` + strings.Repeat("y", 4000) +
+		"\"}\n\n"
 	var events []string
 	for range 2000 {
-		events = append(events, "data: "+big+"\n\n")
+		events = append(events, big)
 	}
 	events = append(events, "data: [DONE]\n\n")
 	up := newProvider(t, streaming(events, 0, false))
@@ -424,7 +425,7 @@ func TestASlowClientIsNotTheProvidersTimeout(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	r := bufio.NewReader(resp.Body)
-	if line, _ := r.ReadString('\n'); !strings.HasPrefix(line, "data: y") {
+	if line, _ := r.ReadString('\n'); !strings.HasPrefix(line, `data: {"id":"c"`) {
 		t.Fatalf("first line %.40q", line)
 	}
 	time.Sleep(600 * time.Millisecond)
@@ -523,5 +524,32 @@ func TestStreamingWorksOverHTTP2BothWays(t *testing.T) {
 	}
 	if code := lastEventError(t, events); code != "upstream_unavailable" {
 		t.Errorf("code %q", code)
+	}
+}
+
+func TestAFirstEventThatIsNotAChunkFallsBack(t *testing.T) {
+	for _, tc := range []struct{ name, first string }{
+		{"not JSON", "data: <html>\n\n"},
+		{"a JSON array", "data: [1,2]\n\n"},
+		{"empty", "data:\n\n"},
+		{"[DONE] after a comment", ": ping\n\ndata: [DONE]\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p0 := newProvider(t, streaming([]string{tc.first, chunk, "data: [DONE]\n\n"}, 0, false))
+			p1 := newProvider(t, pacedMock(t, "mock-b", 0, nil))
+			srv, _, logs := gatewayFor(t, "", []string{at(p0, ""), at(p1, "")},
+				inOrder("m", "p0/mock-small", "p1/mock-small"))
+			resp, events, err := readStream(t, srv, askStream)
+			if err != nil || resp.Header.Get("X-Switchboard-Provider") != "p1" || len(events) != 35 {
+				t.Fatalf("%d from %s, %d events, %v", resp.StatusCode, resp.Header.Get("X-Switchboard-Provider"),
+					len(events), err)
+			}
+			if x := lastExchange(t, logs); len(x.Tried) != 2 || x.Tried[0].Outcome != "unanswered" {
+				t.Errorf("%+v", x.Tried)
+			}
+			if !strings.Contains(logs.String(), `"events":34`) { // the [DONE] isn't a chunk
+				t.Errorf("events: %s", logs)
+			}
+		})
 	}
 }
