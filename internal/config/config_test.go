@@ -19,11 +19,17 @@ func TestTheCheckedInConfigsLoad(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 	fast, ok := c.Route("fast")
-	if !ok || fast.Provider.Name != "mock-a" || fast.Provider.BaseURL != "http://127.0.0.1:8118/v1" ||
-		fast.UpstreamModel != "mock-small" || fast.Provider.Timeout != 10*time.Second {
-		t.Errorf("fast: %+v %+v", fast, fast.Provider)
+	if !ok || len(fast.Targets) != 1 || fast.MaxAttempts != 1 {
+		t.Fatalf("fast: %+v", fast)
 	}
-	if m, ok := c.Route("mock-small"); !ok || m.UpstreamModel != "mock-small" {
+	if ft := fast.Targets[0]; ft.Provider.Name != "mock-a" || ft.Provider.BaseURL != "http://127.0.0.1:8118/v1" ||
+		ft.UpstreamModel != "mock-small" || ft.Provider.Timeout != 10*time.Second || ft.Weight != 1 {
+		t.Errorf("fast: %+v %+v", ft, ft.Provider)
+	}
+	if alias, ok := c.Route("gpt-4o-mini"); !ok || alias.Name != "fast" {
+		t.Errorf("an alias routes to its model: %+v", alias)
+	}
+	if m, ok := c.Route("mock-small"); !ok || m.Targets[0].UpstreamModel != "mock-small" {
 		t.Errorf("an upstream model left out is the model's own name: %+v", m)
 	}
 	if _, ok := c.Route("Fast"); ok {
@@ -39,8 +45,58 @@ func TestTheCheckedInConfigsLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m, _ := c.Route("gpt-4o-mini"); m.Provider.APIKey != "sk-test-123" || m.Provider.Timeout != 2*time.Minute {
-		t.Errorf("%+v", m.Provider)
+	if p := c.Providers[0]; p.APIKey != "sk-test-123" || p.Timeout != 2*time.Minute {
+		t.Errorf("%+v", p)
+	}
+}
+
+func TestTargetsAliasesAndTheirDefaults(t *testing.T) {
+	c, err := Parse([]byte(`{"providers":[{"name":"a","base_url":"http://h/v1"},{"name":"b","base_url":"http://h/v2"}],`+
+		`"models":[`+
+		`{"name":"smart","aliases":["gpt-4o","o/1"],"targets":[{"provider":"b","upstream_model":"large","weight":3},`+
+		`{"provider":"a","weight":0},{"provider":"a","upstream_model":"small"}],"max_attempts":2},`+
+		`{"name":"plain","provider":"a"}]}`), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	smart, ok := c.Route("o/1")
+	if !ok || smart.Name != "smart" || smart.MaxAttempts != 2 || len(smart.Targets) != 3 {
+		t.Fatalf("%+v", smart)
+	}
+	for i, want := range []struct {
+		provider, upstream string
+		weight             int
+	}{{"b", "large", 3}, {"a", "smart", 0}, {"a", "small", 1}} {
+		got := smart.Targets[i]
+		if got.Provider.Name != want.provider || got.UpstreamModel != want.upstream || got.Weight != want.weight {
+			t.Errorf("targets[%d] %s as %s weight %d, want %+v", i, got.Provider.Name, got.UpstreamModel, got.Weight,
+				want)
+		}
+	}
+	if plain, _ := c.Route("plain"); plain.MaxAttempts != 1 || len(plain.Aliases) != 0 {
+		t.Errorf("plain: %+v", plain)
+	}
+	if c.RetryBudget != DefaultRetryBudget || c.Breaker != DefaultBreaker {
+		t.Errorf("defaults: %+v %+v", c.RetryBudget, c.Breaker)
+	}
+	// Every target is tried by default; each of the two settings defaults field by field.
+	c, err = Parse([]byte(`{"retry_budget":{"ratio":0.5},"circuit_breaker":{"cooldown":"1.5s"},`+
+		`"providers":[{"name":"a","base_url":"http://h"},{"name":"b","base_url":"http://h"}],`+
+		`"models":[{"name":"m","targets":[{"provider":"a"},{"provider":"b"}]}]}`), env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := c.Route("m"); m.MaxAttempts != 2 {
+		t.Errorf("max_attempts defaults to the number of targets: %d", m.MaxAttempts)
+	}
+	if c.RetryBudget != (RetryBudget{Ratio: 0.5, MinPerSecond: 1}) ||
+		c.Breaker != (Breaker{Failures: 5, Cooldown: 1500 * time.Millisecond}) {
+		t.Errorf("%+v %+v", c.RetryBudget, c.Breaker)
+	}
+	c, err = Parse([]byte(`{"retry_budget":{"ratio":0,"min_per_second":0},"circuit_breaker":{"failures":0},`+
+		minimal[1:]), env(nil))
+	if err != nil || c.RetryBudget != (RetryBudget{}) || c.Breaker.Failures != 0 {
+		t.Errorf("both can be turned off: %+v %+v %v", c.RetryBudget, c.Breaker, err)
 	}
 }
 
@@ -151,6 +207,46 @@ func TestMistakesAreRefusedAndNamed(t *testing.T) {
 		{"a model used twice", file("", p, m+`,`+m), `models[1]: the name "m" is used twice`},
 		{"an unknown provider", file("", p, `{"name":"m","provider":"q"}`), `provider "q" is not one`},
 		{"a model not an object", file("", p, `[]`), "models[0]: must be an object"},
+		{"a model without a provider", file("", p, `{"name":"m"}`), "a provider or a list of targets"},
+		{"a provider and targets", file("", p, `{"name":"m","provider":"p","targets":[{"provider":"p"}]}`),
+			"not both"},
+		{"an upstream model and targets", file("", p, `{"name":"m","upstream_model":"x","targets":[{"provider":"p"}]}`),
+			"not both"},
+		{"no targets", file("", p, `{"name":"m","targets":[]}`), "targets is empty"},
+		{"a target not an object", file("", p, `{"name":"m","targets":["p"]}`), "targets[0]: must be an object"},
+		{"a target's unknown provider", file("", p, `{"name":"m","targets":[{"provider":"q"}]}`),
+			`targets[0]: provider "q" is not one`},
+		{"a target without a provider", file("", p, `{"name":"m","targets":[{"weight":1}]}`),
+			`targets[0]: provider "" is not one`},
+		{"a target key in another case", file("", p, `{"name":"m","targets":[{"Provider":"p"}]}`),
+			`unknown key "Provider"`},
+		{"a target twice", file("", p, `{"name":"m","targets":[{"provider":"p"},{"provider":"p","upstream_model":"m"}]}`),
+			"targets[1]: p as \"m\" is a target twice"},
+		{"a negative weight", file("", p, `{"name":"m","targets":[{"provider":"p","weight":-1}]}`), "weight must be"},
+		{"a fractional weight", file("", p, `{"name":"m","targets":[{"provider":"p","weight":0.5}]}`), "weight"},
+		{"a weight too large", file("", p, `{"name":"m","targets":[{"provider":"p","weight":1001}]}`), "weight must be"},
+		{"only standbys", file("", p, `{"name":"m","targets":[{"provider":"p","weight":0}]}`), "every target has weight 0"},
+		{"zero attempts", file("", p, `{"name":"m","provider":"p","max_attempts":0}`), "max_attempts must be from 1 to"},
+		{"more attempts than targets", file("", p, `{"name":"m","provider":"p","max_attempts":2}`),
+			"max_attempts must be from 1 to the number of targets (1)"},
+		{"an empty alias", file("", p, `{"name":"m","provider":"p","aliases":[""]}`), "aliases[0] must be"},
+		{"a null alias", file("", p, `{"name":"m","provider":"p","aliases":[null]}`), "aliases[0] must be"},
+		{"aliases not a list", file("", p, `{"name":"m","provider":"p","aliases":"x"}`), "aliases"},
+		{"an alias of its own name", file("", p, `{"name":"m","provider":"p","aliases":["m"]}`),
+			`models[0]: the name "m" is used twice`},
+		{"an alias that is another model", file("", p, `{"name":"m","provider":"p","aliases":["n"]},`+
+			`{"name":"n","provider":"p"}`), `models[1]: the name "n" is used twice`},
+		{"an alias twice", file("", p, `{"name":"m","provider":"p","aliases":["x"]},{"name":"n","provider":"p",`+
+			`"aliases":["x"]}`), `models[1]: the name "x" is used twice`},
+		{"a budget ratio over 1", file(`"retry_budget":{"ratio":1.5}`, p, m), "retry_budget: ratio must be"},
+		{"a negative budget ratio", file(`"retry_budget":{"ratio":-0.1}`, p, m), "retry_budget: ratio must be"},
+		{"a negative floor", file(`"retry_budget":{"min_per_second":-1}`, p, m), "min_per_second must be"},
+		{"a budget key in another case", file(`"retry_budget":{"Ratio":0.1}`, p, m), `unknown key "Ratio"`},
+		{"a budget not an object", file(`"retry_budget":0.2`, p, m), "retry_budget: must be an object"},
+		{"negative breaker failures", file(`"circuit_breaker":{"failures":-1}`, p, m), "failures must be from 0"},
+		{"a bad cooldown", file(`"circuit_breaker":{"cooldown":"10"}`, p, m), "cooldown"},
+		{"a zero cooldown", file(`"circuit_breaker":{"cooldown":"0s"}`, p, m), "cooldown"},
+		{"a breaker key in another case", file(`"circuit_breaker":{"Failures":3}`, p, m), `unknown key "Failures"`},
 	} {
 		_, err := Parse([]byte(tc.file), env(map[string]string{"KEY": "sk-never-in-an-error"}))
 		if err == nil {

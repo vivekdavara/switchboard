@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -29,7 +30,18 @@ const (
 	DefaultMaxResponseBytes = 16 << 20
 	DefaultShutdownGrace    = 10 * time.Second
 	DefaultTimeout          = 60 * time.Second
+	DefaultWeight           = 1
 )
+
+// DefaultRetryBudget and DefaultBreaker are what the file's retry_budget and circuit_breaker default to, each field on
+// its own.
+var (
+	DefaultRetryBudget = RetryBudget{Ratio: 0.2, MinPerSecond: 1}
+	DefaultBreaker     = Breaker{Failures: 5, Cooldown: 10 * time.Second}
+)
+
+// MaxWeight bounds a target's weight, so the sum of a model's weights can't overflow.
+const MaxWeight = 1000
 
 // MaxBytes bounds both size limits. The gateway holds a whole request and a whole answer in memory, so a limit past
 // this is a mistake, and a limit near math.MaxInt64 overflowed the gateway's limit+1 read (found in the day-1 review:
@@ -52,8 +64,27 @@ type Config struct {
 	AllowedHosts []string
 	Providers    []*Provider
 	Models       []Model
+	RetryBudget  RetryBudget
+	Breaker      Breaker
 
-	routes map[string]Model
+	routes map[string]Model // by name and by alias
+}
+
+// RetryBudget bounds the attempts the gateway makes after a request's first, across all requests: in any 10 seconds
+// it makes at most Ratio of them per request received, plus MinPerSecond of them a second. When a provider fails,
+// fallback adds load to the others just when they are busiest; the budget caps that extra load. Ratio 0 and
+// MinPerSecond 0 turn fallback off.
+type RetryBudget struct {
+	Ratio        float64 // from 0 to 1
+	MinPerSecond float64 // from 0 to 1000
+}
+
+// Breaker is how each provider's circuit breaker behaves: Failures failed attempts in a row open it, and after
+// Cooldown one request is let through as a probe, whose result closes it or opens it again. Failures 0 turns the
+// breakers off.
+type Breaker struct {
+	Failures int
+	Cooldown time.Duration
 }
 
 // Provider is an upstream that speaks the OpenAI API.
@@ -67,14 +98,27 @@ type Provider struct {
 	APIKeyEnv string
 }
 
-// Model is a model the gateway serves and where it sends it.
+// Model is a model the gateway serves: its name, the other names clients may use for it, and the targets that can
+// serve it.
 type Model struct {
-	Name          string
-	Provider      *Provider
-	UpstreamModel string // the provider's name for it
+	Name    string
+	Aliases []string
+	Targets []Target
+	// MaxAttempts is how many targets one request may try, the first included; 1 means no fallback. It is at most
+	// len(Targets): a request never tries one target twice (a client's SDK retries on its own, with backoff).
+	MaxAttempts int
 }
 
-// Route returns the model a client asked for by name.
+// Target is one way to serve a model: a provider, and the provider's name for the model. A request's first attempt
+// goes to a target picked at random in proportion to the weights; a target of weight 0 is a standby, tried only
+// after the others.
+type Target struct {
+	Provider      *Provider
+	UpstreamModel string
+	Weight        int
+}
+
+// Route returns the model a client asked for, by its name or one of its aliases.
 func (c *Config) Route(name string) (Model, bool) {
 	m, ok := c.routes[name]
 	return m, ok
@@ -112,11 +156,14 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 		MaxRequestBytes:  DefaultMaxRequestBytes,
 		MaxResponseBytes: DefaultMaxResponseBytes,
 		ShutdownGrace:    DefaultShutdownGrace,
+		RetryBudget:      DefaultRetryBudget,
+		Breaker:          DefaultBreaker,
 		routes:           map[string]Model{},
 	}
 	var grace, drain string
 	var hosts []string
 	var providers, models []json.RawMessage
+	var budget, breaker json.RawMessage
 	if err := decodeExact("the file", top, fields{
 		"listen":             &c.Listen,
 		"max_request_bytes":  &c.MaxRequestBytes,
@@ -124,10 +171,22 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 		"shutdown_grace":     &grace,
 		"drain_delay":        &drain,
 		"allowed_hosts":      &hosts,
+		"retry_budget":       &budget,
+		"circuit_breaker":    &breaker,
 		"providers":          &providers,
 		"models":             &models,
 	}); err != nil {
 		return nil, err
+	}
+	if budget != nil {
+		if err := parseRetryBudget(budget, &c.RetryBudget); err != nil {
+			return nil, fmt.Errorf("retry_budget: %w", err)
+		}
+	}
+	if breaker != nil {
+		if err := parseBreaker(breaker, &c.Breaker); err != nil {
+			return nil, fmt.Errorf("circuit_breaker: %w", err)
+		}
 	}
 	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
 		return nil, fmt.Errorf("listen: %q is not a host:port address", c.Listen)
@@ -175,34 +234,178 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 		return nil, errors.New("models: at least one is required")
 	}
 	for i, raw := range models {
-		var m Model
-		var provider string
-		members, err := object(raw)
+		m, err := parseModel(raw, byName)
 		if err == nil {
-			err = decodeExact("the model", members, fields{
-				"name": &m.Name, "provider": &provider, "upstream_model": &m.UpstreamModel,
-			})
-		}
-		switch {
-		case err != nil:
-		case m.Name == "":
-			err = errors.New("name is required")
-		case c.routes[m.Name].Name != "":
-			err = fmt.Errorf("the name %q is used twice", m.Name)
-		case byName[provider] == nil:
-			err = fmt.Errorf("provider %q is not one of the providers", provider)
+			// Names and aliases share one namespace: a name a client sends must mean one model.
+			for _, name := range append([]string{m.Name}, m.Aliases...) {
+				if _, taken := c.routes[name]; taken {
+					err = fmt.Errorf("the name %q is used twice (model names and aliases share one namespace)", name)
+					break
+				}
+				c.routes[name] = m
+			}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("models[%d]: %w", i, err)
 		}
-		m.Provider = byName[provider]
-		if m.UpstreamModel == "" {
-			m.UpstreamModel = m.Name
-		}
 		c.Models = append(c.Models, m)
-		c.routes[m.Name] = m
 	}
 	return c, nil
+}
+
+// parseModel reads one model. It has either a provider (and an upstream model, its own name by default), as on
+// day 1, or a list of targets, each with a provider, an upstream model and a weight.
+func parseModel(raw json.RawMessage, byName map[string]*Provider) (Model, error) {
+	var m Model
+	members, err := object(raw)
+	if err != nil {
+		return m, err
+	}
+	var provider, upstream string
+	var aliases []string
+	var targets []json.RawMessage
+	maxAttempts := 0
+	if err := decodeExact("the model", members, fields{
+		"name": &m.Name, "aliases": &aliases, "provider": &provider, "upstream_model": &upstream,
+		"targets": &targets, "max_attempts": &maxAttempts,
+	}); err != nil {
+		return m, err
+	}
+	_, hasProvider := member(members, "provider")
+	_, hasUpstream := member(members, "upstream_model")
+	_, hasTargets := member(members, "targets")
+	_, hasMax := member(members, "max_attempts")
+	switch {
+	case m.Name == "":
+		return m, errors.New("name is required")
+	case hasTargets && (hasProvider || hasUpstream):
+		return m, errors.New("give either provider (and upstream_model) or targets, not both")
+	case !hasTargets && !hasProvider:
+		return m, errors.New("a provider or a list of targets is required")
+	}
+	for j, a := range aliases {
+		if a == "" {
+			return m, fmt.Errorf("aliases[%d] must be a non-empty string", j)
+		}
+	}
+	m.Aliases = aliases
+
+	if hasProvider {
+		if byName[provider] == nil {
+			return m, fmt.Errorf("provider %q is not one of the providers", provider)
+		}
+		if upstream == "" {
+			upstream = m.Name
+		}
+		m.Targets = []Target{{Provider: byName[provider], UpstreamModel: upstream, Weight: DefaultWeight}}
+	} else {
+		if len(targets) == 0 {
+			return m, errors.New("targets is empty; a model needs at least one")
+		}
+		seen := map[[2]string]bool{}
+		for j, raw := range targets {
+			t, err := parseTarget(raw, m.Name, byName)
+			if err != nil {
+				return m, fmt.Errorf("targets[%d]: %w", j, err)
+			}
+			key := [2]string{t.Provider.Name, t.UpstreamModel}
+			if seen[key] {
+				return m, fmt.Errorf("targets[%d]: %s as %q is a target twice", j, t.Provider.Name, t.UpstreamModel)
+			}
+			seen[key] = true
+			m.Targets = append(m.Targets, t)
+		}
+	}
+	if !slices.ContainsFunc(m.Targets, func(t Target) bool { return t.Weight > 0 }) {
+		return m, errors.New("every target has weight 0, so none would be tried first")
+	}
+
+	m.MaxAttempts = len(m.Targets)
+	if hasMax {
+		if maxAttempts < 1 || maxAttempts > len(m.Targets) {
+			return m, fmt.Errorf("max_attempts must be from 1 to the number of targets (%d): a request tries each "+
+				"target at most once", len(m.Targets))
+		}
+		m.MaxAttempts = maxAttempts
+	}
+	return m, nil
+}
+
+func parseTarget(raw json.RawMessage, model string, byName map[string]*Provider) (Target, error) {
+	t := Target{Weight: DefaultWeight}
+	members, err := object(raw)
+	if err != nil {
+		return t, err
+	}
+	var provider string
+	if err := decodeExact("the target", members, fields{
+		"provider": &provider, "upstream_model": &t.UpstreamModel, "weight": &t.Weight,
+	}); err != nil {
+		return t, err
+	}
+	if t.Provider = byName[provider]; t.Provider == nil {
+		return t, fmt.Errorf("provider %q is not one of the providers", provider)
+	}
+	if t.UpstreamModel == "" {
+		t.UpstreamModel = model
+	}
+	if t.Weight < 0 || t.Weight > MaxWeight {
+		return t, fmt.Errorf("weight must be an integer from 0 to %d", MaxWeight)
+	}
+	return t, nil
+}
+
+func parseRetryBudget(raw json.RawMessage, b *RetryBudget) error {
+	members, err := object(raw)
+	if err != nil {
+		return err
+	}
+	if err := decodeExact("retry_budget", members, fields{
+		"ratio": &b.Ratio, "min_per_second": &b.MinPerSecond,
+	}); err != nil {
+		return err
+	}
+	switch {
+	case !(b.Ratio >= 0 && b.Ratio <= 1):
+		return errors.New("ratio must be from 0 to 1 (retries per request received)")
+	case !(b.MinPerSecond >= 0 && b.MinPerSecond <= 1000):
+		return errors.New("min_per_second must be from 0 to 1000")
+	}
+	return nil
+}
+
+func parseBreaker(raw json.RawMessage, b *Breaker) error {
+	members, err := object(raw)
+	if err != nil {
+		return err
+	}
+	var cooldown string
+	if err := decodeExact("circuit_breaker", members, fields{
+		"failures": &b.Failures, "cooldown": &cooldown,
+	}); err != nil {
+		return err
+	}
+	if b.Failures < 0 || b.Failures > 1000 {
+		return errors.New("failures must be from 0 (no breakers) to 1000")
+	}
+	if cooldown != "" {
+		d, err := time.ParseDuration(cooldown)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("cooldown: %q is not a positive duration such as 10s", cooldown)
+		}
+		b.Cooldown = d
+	}
+	return nil
+}
+
+// member returns the value of an object's key, if it has it.
+func member(members []jsonstrict.Member, key string) (json.RawMessage, bool) {
+	for _, m := range members {
+		if m.Key == key {
+			return m.Value, true
+		}
+	}
+	return nil, false
 }
 
 func parseProvider(raw json.RawMessage, getenv func(string) string) (*Provider, error) {

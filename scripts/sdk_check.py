@@ -23,10 +23,12 @@ def check(name, ok, detail):
 
 
 ids = [m.id for m in client.models.list()]
-check("the models", ids == ["fast", "smart", "mock-small"], ids)
+check("the models", ids == ["fast", "gpt-4o-mini", "smart", "mock-small"], ids)
 
 m = client.models.retrieve("smart")
-check("one model", m.id == "smart" and m.owned_by == "mock-b", f"{m.id}, owned by {m.owned_by}")
+check("one model", m.id == "smart" and m.owned_by == "switchboard", f"{m.id}, owned by {m.owned_by}")
+m = client.models.retrieve("gpt-4o-mini")
+check("an alias", m.id == "gpt-4o-mini" and m.owned_by == "switchboard", f"{m.id}, owned by {m.owned_by}")
 try:
     client.models.retrieve("gpt-9")
     check("an unknown model's details", False, "no error")

@@ -25,6 +25,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -124,8 +125,22 @@ func printRoutes(w io.Writer, cfg *config.Config) {
 		}
 		fmt.Fprintf(w, "provider %s: %s, timeout %s, %s\n", p.Name, p.BaseURL, p.Timeout, key)
 	}
+	fmt.Fprintf(w, "retry budget %g a request + %g a second; circuit breaker after %d failures, cooldown %s\n",
+		cfg.RetryBudget.Ratio, cfg.RetryBudget.MinPerSecond, cfg.Breaker.Failures, cfg.Breaker.Cooldown)
 	for _, m := range cfg.Models {
-		fmt.Fprintf(w, "model %s -> %s as %s\n", m.Name, m.Provider.Name, m.UpstreamModel)
+		var targets []string
+		for _, t := range m.Targets {
+			targets = append(targets, fmt.Sprintf("%s as %s (weight %d)", t.Provider.Name, t.UpstreamModel, t.Weight))
+		}
+		aliases := ""
+		if len(m.Aliases) > 0 {
+			aliases = " (also " + strings.Join(m.Aliases, ", ") + ")"
+		}
+		attempts := "no fallback"
+		if m.MaxAttempts > 1 {
+			attempts = fmt.Sprintf("up to %d attempts", m.MaxAttempts)
+		}
+		fmt.Fprintf(w, "model %s%s -> %s; %s\n", m.Name, aliases, strings.Join(targets, ", "), attempts)
 	}
 }
 

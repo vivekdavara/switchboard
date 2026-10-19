@@ -124,10 +124,13 @@ func (g *Gateway) readyz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ready\n"))
 }
 
+// models lists every name a client may send: each model's, then its aliases.
 func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 	list := openai.ModelList{Object: "list", Data: []openai.Model{}}
 	for _, m := range g.cfg.Models {
-		list.Data = append(list.Data, modelObject(m))
+		for _, name := range append([]string{m.Name}, m.Aliases...) {
+			list.Data = append(list.Data, modelObject(name))
+		}
 	}
 	b, _ := json.Marshal(list)
 	openai.WriteJSON(w, http.StatusOK, b)
@@ -136,18 +139,19 @@ func (g *Gateway) models(w http.ResponseWriter, r *http.Request) {
 // model answers GET /v1/models/{model}, which SDKs call to check that a model exists.
 func (g *Gateway) model(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("model")
-	m, ok := g.cfg.Route(name)
-	if !ok {
+	if _, ok := g.cfg.Route(name); !ok {
 		openai.WriteError(w, openai.Errorf(http.StatusNotFound, openai.TypeInvalidRequest, "model",
 			"model_not_found", "the model %q is not served here", name))
 		return
 	}
-	b, _ := json.Marshal(modelObject(m))
+	b, _ := json.Marshal(modelObject(name))
 	openai.WriteJSON(w, http.StatusOK, b)
 }
 
-func modelObject(m config.Model) openai.Model {
-	return openai.Model{ID: m.Name, Object: "model", OwnedBy: m.Provider.Name}
+// modelObject is a model as GET /v1/models shows it. The gateway owns the name: which provider serves a request is
+// decided per request, by weight and by fallback.
+func modelObject(name string) openai.Model {
+	return openai.Model{ID: name, Object: "model", OwnedBy: "switchboard"}
 }
 
 // exchange is one chat completion as the log line reports it.
@@ -242,16 +246,17 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			"the model %q is not served here; GET /v1/models lists the ones that are", req.Model), nil)
 		return
 	}
-	x.provider, x.upstreamModel = route.Provider.Name, route.UpstreamModel
-	w.Header().Set("X-Switchboard-Provider", route.Provider.Name)
+	target := route.Targets[0]
+	x.provider, x.upstreamModel = target.Provider.Name, target.UpstreamModel
+	w.Header().Set("X-Switchboard-Provider", target.Provider.Name)
 
 	// 6 to 8. Rewrite, forward, answer.
-	g.forward(w, r, x, route, req.WithModel(route.UpstreamModel))
+	g.forward(w, r, x, target, req.WithModel(target.UpstreamModel))
 }
 
-// forward sends the rewritten body to the route's provider and writes what the client gets.
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, x *exchange, route config.Model, body []byte) {
-	p := route.Provider
+// forward sends the rewritten body to the target's provider and writes what the client gets.
+func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, x *exchange, target config.Target, body []byte) {
+	p := target.Provider
 	ctx, cancel := context.WithTimeout(r.Context(), p.Timeout)
 	defer cancel()
 	up, err := http.NewRequestWithContext(ctx, http.MethodPost, p.BaseURL+"/chat/completions",

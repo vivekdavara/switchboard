@@ -212,9 +212,10 @@ func TestCheckPrintsTheRoutes(t *testing.T) {
 	want := `listen 127.0.0.1:8108, drain 0s, shutdown grace 10s, request limit 4194304 bytes, response limit 16777216 bytes
 provider mock-a: http://127.0.0.1:8118/v1, timeout 10s, no key
 provider mock-b: http://127.0.0.1:8119/v1, timeout 10s, no key
-model fast -> mock-a as mock-small
-model smart -> mock-b as mock-large
-model mock-small -> mock-a as mock-small
+retry budget 0.2 a request + 1 a second; circuit breaker after 5 failures, cooldown 10s
+model fast (also gpt-4o-mini) -> mock-a as mock-small (weight 1); no fallback
+model smart -> mock-b as mock-large (weight 1); no fallback
+model mock-small -> mock-a as mock-small (weight 1); no fallback
 `
 	if code != 0 || out.String() != want {
 		t.Errorf("exit %d:\n%s", code, out.String())

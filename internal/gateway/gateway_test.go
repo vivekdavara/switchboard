@@ -77,7 +77,8 @@ func (p *provider) requests() []seen {
 }
 
 // gatewayFor serves a gateway whose providers are the given test servers, named p0, p1... Each model is
-// "name=provider/upstream". extra is spliced into the top level of the config.
+// "name=provider/upstream", or a model's JSON object as the config file has it. extra is spliced into the top level
+// of the config.
 func gatewayFor(t *testing.T, extra string, providers []string, models ...string) (*httptest.Server, *Gateway,
 	*syncBuffer) {
 	t.Helper()
@@ -86,6 +87,10 @@ func gatewayFor(t *testing.T, extra string, providers []string, models ...string
 		ps = append(ps, fmt.Sprintf(`{"name":"p%d",%s}`, i, p))
 	}
 	for _, m := range models {
+		if strings.HasPrefix(m, "{") {
+			ms = append(ms, m)
+			continue
+		}
 		name, rest, _ := strings.Cut(m, "=")
 		prov, up, _ := strings.Cut(rest, "/")
 		ms = append(ms, fmt.Sprintf(`{"name":%q,"provider":%q,"upstream_model":%q}`, name, prov, up))
@@ -324,7 +329,8 @@ func TestRequestsTheGatewayRefusesNeverReachAProvider(t *testing.T) {
 
 func TestOtherPathsAndMethodsAreOpenAIErrors(t *testing.T) {
 	up := newProvider(t, mockProvider(t, "mock-a"))
-	srv, g, _ := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small", "smart=p0/mock-large",
+	srv, g, _ := gatewayFor(t, "", []string{at(up, "")}, "fast=p0/mock-small",
+		`{"name":"smart","aliases":["gpt-4o","team/smart"],"provider":"p0","upstream_model":"mock-large"}`,
 		"org/model-1=p0/mock-small")
 	for _, tc := range []struct {
 		method, path string
@@ -357,9 +363,12 @@ func TestOtherPathsAndMethodsAreOpenAIErrors(t *testing.T) {
 	var list openai.ModelList
 	json.NewDecoder(resp.Body).Decode(&list)
 	resp.Body.Close()
+	// Every name a client may send: each model's, then its aliases.
 	want := openai.ModelList{Object: "list", Data: []openai.Model{
-		{ID: "fast", Object: "model", OwnedBy: "p0"}, {ID: "smart", Object: "model", OwnedBy: "p0"},
-		{ID: "org/model-1", Object: "model", OwnedBy: "p0"}}}
+		{ID: "fast", Object: "model", OwnedBy: "switchboard"}, {ID: "smart", Object: "model", OwnedBy: "switchboard"},
+		{ID: "gpt-4o", Object: "model", OwnedBy: "switchboard"},
+		{ID: "team/smart", Object: "model", OwnedBy: "switchboard"},
+		{ID: "org/model-1", Object: "model", OwnedBy: "switchboard"}}}
 	if fmt.Sprint(list) != fmt.Sprint(want) {
 		t.Errorf("models %+v", list)
 	}
@@ -369,9 +378,10 @@ func TestOtherPathsAndMethodsAreOpenAIErrors(t *testing.T) {
 		status int
 		body   string
 	}{
-		{"/v1/models/fast", 200, `{"id":"fast","object":"model","created":0,"owned_by":"p0"}`},
-		{"/v1/models/org/model-1", 200, `{"id":"org/model-1","object":"model","created":0,"owned_by":"p0"}`},
-		{"/v1/models/org%2Fmodel-1", 200, `{"id":"org/model-1","object":"model","created":0,"owned_by":"p0"}`},
+		{"/v1/models/fast", 200, `{"id":"fast","object":"model","created":0,"owned_by":"switchboard"}`},
+		{"/v1/models/org/model-1", 200, `{"id":"org/model-1","object":"model","created":0,"owned_by":"switchboard"}`},
+		{"/v1/models/org%2Fmodel-1", 200, `{"id":"org/model-1","object":"model","created":0,"owned_by":"switchboard"}`},
+		{"/v1/models/team/smart", 200, `{"id":"team/smart","object":"model","created":0,"owned_by":"switchboard"}`},
 		{"/v1/models/mock-small", 404, ""}, // an upstream name isn't a model here
 		{"/v1/models/", 404, ""},
 		{"/v1/models/gpt-9", 404, ""},
@@ -916,5 +926,22 @@ func TestOnlyTheTwoHealthPathsAreExempt(t *testing.T) {
 		if resp.StatusCode != 403 {
 			t.Errorf("GET %s from a foreign host: %d, want 403", path, resp.StatusCode)
 		}
+	}
+}
+
+func TestAnAliasIsServedAsItsModel(t *testing.T) {
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	srv, _, logs := gatewayFor(t, "", []string{at(up, "")},
+		`{"name":"fast","aliases":["gpt-4o-mini"],"provider":"p0","upstream_model":"mock-small"}`)
+	resp, b := send(t, srv, strings.Replace(ask, `"fast"`, `"gpt-4o-mini"`, 1))
+	if resp.StatusCode != 200 || resp.Header.Get("X-Switchboard-Provider") != "p0" {
+		t.Fatalf("%d %v %s", resp.StatusCode, resp.Header, b)
+	}
+	if got := up.requests(); len(got) != 1 || !strings.Contains(string(got[0].body), `"model":"mock-small"`) {
+		t.Errorf("upstream got %q", got)
+	}
+	// The log names the model as the client did, so an alias's traffic can be told apart.
+	if !strings.Contains(logs.String(), `"model":"gpt-4o-mini"`) {
+		t.Errorf("log: %s", logs)
 	}
 }
