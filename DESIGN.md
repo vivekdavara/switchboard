@@ -157,8 +157,8 @@ Every attempt ends in one of three outcomes, and the outcome decides what may co
 | Outcome | When | What next |
 |---|---|---|
 | **answered** | a completion (200 with JSON), an answer about the request (400, 413, 422), an answer larger than `max_response_bytes`, or the gateway stopping | the client gets it; nothing more is tried |
-| **failed**: the provider didn't do the work | it answered 429, 5xx, 401 or 403, 404, a redirect or another 4xx; or it never got the whole request (refused, DNS, a write that broke: `httptrace`'s `WroteRequest` never reported success) | any other target, the same provider's included |
-| **unanswered**: it may have done the work | it got the whole request and then timed out, broke off, answered 200 without JSON, or (streaming) ended its stream before the first event | other providers only: this one isn't sent the request again, for any upstream model |
+| **failed**: the provider didn't do the work | it answered 429, 500, 503 or another 5xx, 401 or 403, 404, a redirect or another 4xx; or it never got the whole request (refused, DNS, a write that broke: `httptrace`'s `WroteRequest` never reported success) | any other target, the same provider's included |
+| **unanswered**: it may have done the work | it got the whole request and then timed out, broke off, answered 200 without JSON, or answered 502, 504 or 524 (its own front end lost a back end that may have done the work; 524 is Cloudflare's timeout); or (streaming) its first data event was `[DONE]` or no JSON object, or its stream ended before one | other providers only: this one isn't sent the request again, for any upstream model |
 
 The rule behind the last row is day 1's note: a timeout or a cut-off answer is not proof that nothing was billed,
 and the provider may still be working on it. Sending it the same request again could pay twice for one answer;
@@ -180,7 +180,8 @@ each attempt's provider, upstream model, status, time, outcome and error code, a
 When a provider fails, every request falls back to the others, just when they are busiest; a fixed number of retries
 per request would let one outage multiply the load on the rest (a retry storm). So retries come from a budget shared
 by all requests (`internal/budget`): in any 10 seconds, the gateway makes at most `ratio` retries per request it
-received, plus `min_per_second` a second (the floor that lets a quiet gateway still fall back). The defaults, 0.2 and
+received, plus `min_per_second` a second (the floor that lets a quiet gateway still fall back). A request counts
+once it makes its first attempt; one answered `circuit_open` without an attempt adds no load and isn't counted. The defaults, 0.2 and
 1, mean that while one provider is down at most one request in five (plus ten in any 10 seconds) is retried; the rest
 get the failure at once. `{"ratio": 0, "min_per_second": 0}` turns fallback off.
 
@@ -203,6 +204,14 @@ model, not the provider's health (its other models may be fine). Answers, includ
 successes. A client leaving or the stop count for nothing. A 429 is a failure: while a provider rate-limits the
 gateway's key, sending it every request only collects more 429s.
 
+**A stream reports at its first event.** A ticket used to be reported when its attempt ended, which for a stream is
+when the stream ends: a half-open breaker whose probe was a stream stayed half-open that long, and every other request
+skipped the healthy provider as `circuit_open`, for as long as one client cared to read (found in the day-2 review).
+Now the first event is reported as the success it is, at the commit; a break after that counts through
+`Breaker.Fail`, as a failure seen then (one more in a row while closed; nothing while open, or while half-open, where
+a probe decides). `TestEachOutcomeTellsTheBreakerWhatItShould` makes 19 kinds of answer a probe and checks the
+verdict of each.
+
 **Generations.** Every change of state starts a new generation, and a result counts only in the generation its
 attempt was allowed in. Without that, a slow request allowed while the breaker was closed, failing after it opened,
 would restart the cooldown, and one succeeding during a probe would close the breaker on old evidence (both tested).
@@ -216,10 +225,11 @@ With `stream: true` the request goes upstream with `Accept: text/event-stream`. 
 it is complete, and once its 200 and its first event are out, its status can't change. So:
 
 1. **Before the first event, nothing is written.** The gateway reads the provider's stream until its first data
-   event. A failure until then (a status, an error object as the first event, a stream that ends or breaks, no event
-   within the timeout, or a 200 that isn't `text/event-stream`) is an attempt's outcome like any other, and the
-   request can fall back. Comments (`: ping`) before the first data event are held and sent with it, so a ping can't
-   commit a stream.
+   event, which must be a chunk: a JSON object. A failure until then (a status, an error object as the first event,
+   `[DONE]` with no chunk before it, a first event that isn't JSON, a stream that ends or breaks, no event within the
+   timeout, or a 200 that isn't `text/event-stream`) is an attempt's outcome like any other, and the request can fall
+   back. (A `[DONE]`-only stream committed an empty 200 until the day-2 review found it.) Comments (`: ping`) before
+   the first data event are held and sent with it, so a ping can't commit a stream.
 2. **The first event commits.** The gateway writes 200, `Content-Type: text/event-stream`, its headers and that event,
    then every event as it arrives, byte for byte, flushed one at a time.
 3. **After that, a break can't become a 502.** If the provider ends the stream before `data: [DONE]`, makes no
@@ -227,7 +237,10 @@ it is complete, and once its 200 and its first event are out, its status can't c
    last event in OpenAI's error shape (`data: {"error": {..., "code": "upstream_unavailable"}}`), which the OpenAI SDK
    raises as an `APIError`, and the connection is dropped, so even a client that ignores the event sees a broken
    transfer (curl exits 18) rather than a stream that ends as if complete. There is no fallback after the commit: the
-   client already has part of one provider's answer.
+   client already has part of one provider's answer. Only data events are progress: a provider that sends pings and
+   nothing else still times out (a ping used to restart the timeout, a suspicion of the day-2 review). An HTTP/1.0
+   client can't tell the dropped connection from the end of the body (its bodies end when the connection closes), so
+   for it the error event is the only sign.
 
 A client that leaves mid-stream cancels the provider's request and is logged as 499. The server has no
 `WriteTimeout` (a stream can rightly take minutes); a client that reads slowly slows the relay, which slows the
@@ -405,7 +418,7 @@ As built on day 1, beyond that plan:
 
 As built on day 2:
 
-- Fallback is tested per kind of failure (19 kinds: which fall back and with what outcome), for the unanswered
+- Fallback is tested per kind of failure (21 kinds: which fall back and with what outcome), for the unanswered
   rule (a timeout skips the same provider's other target, a 500 doesn't), for the last answer and its headers,
   `max_attempts`, the budget (0 turns fallback off; 0.5 lets every second request fall back), open breakers (skipped,
   then 503 `circuit_open` with `Retry-After`), a 404 not tripping one, weights, and a client leaving or the stop ending

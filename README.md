@@ -170,16 +170,16 @@ outcomes:
 | Outcome | When | Next |
 |---|---|---|
 | answered | a completion; 400, 413, 422; an answer over the limit; the gateway stopping | the client gets it |
-| failed (the provider didn't do the work) | 429, 5xx, 401/403, 404, a redirect, another 4xx; or it never got the whole request | any other target |
-| unanswered (it may have done the work) | it got the request, then timed out, broke off, or answered 200 without JSON | other providers only |
+| failed (the provider didn't do the work) | 429, 500, 503 and other 5xx, 401/403, 404, a redirect, another 4xx; or it never got the whole request | any other target |
+| unanswered (it may have done the work) | it got the request, then timed out, broke off, answered 200 without JSON, or 502, 504 or 524 (its own front end lost its back end) | other providers only |
 
 Every retry needs the retry budget's say-so (in any 10 s, at most 0.2 retries per request plus 1 a second, by
 default), and every attempt the provider's circuit breaker's (5 failures in a row open it for 10 s, then one probe).
 When nothing more may be tried, the client gets the last attempt's answer with only its own headers; when every
 target's breaker is open, 503 `circuit_open` with `Retry-After`.
 
-**Streaming (day 2).** Nothing is written until the provider's first data event, so a stream that fails before it
-falls back like any request. The first event commits: 200, `text/event-stream`, and every event as it comes, flushed
+**Streaming (day 2).** Nothing is written until the provider's first data event, which must be a chunk (a JSON
+object, not `[DONE]`), so a stream that fails before it falls back like any request. The first event commits: 200, `text/event-stream`, and every event as it comes, flushed
 one at a time. A stream that breaks after that (ended before `data: [DONE]`, no progress for the provider's timeout,
 too large, the gateway stopping) gets one last event in OpenAI's error shape, which the OpenAI SDK raises as an
 `APIError`, and the connection is dropped. The provider's `timeout` is the longest wait for its next sign of
@@ -349,7 +349,7 @@ CI runs the same on Ubuntu 24.04, then `make demo`'s script with the SDK checks 
 | `breaker` | failures in a row (a success resets them); the cooldown; one probe at a time, its success, failure and hand-back; results counting only in their generation (late successes and failures from before a change); a ticket reporting once; 16 goroutines opening it once |
 | `mock` | exact answers and usage; `max_tokens` and `n`; validation; the key; latency lower bounds; jitter bounds; the same seed gives the same run, and a higher error, hang or cut rate only adds failures, hangs or cuts; `Close` drops held and later requests; an unreadable body is a 400; a stream is the plain answer chunk by chunk (with `n` = 2), its pace, its usage chunk, a cut stream with no `[DONE]`, a cut answer shorter than its `Content-Length` |
 | `gateway` | a forward with only `model` rewritten and only the allowlisted headers; the `Host` allowlist (any spelling of an address, no `Host` at all, the health endpoints exempt, refusals logged); every refusal before forwarding, the request limit at exactly its boundary, a 408 for a slow body, a 503 for a body still arriving at the stop; every row of the mapping table with a misbehaving provider; the response limit at exactly its boundary; timeouts (no answer, a trickled body); unreachable and cut-off providers; a client that leaves or half-closes (never an empty 200); the shutdown 503; a forwarded request never resent; HTTP/2 to an https provider; the pool keeping its connections; the log line's facts and absences; 64 concurrent requests |
-| `gateway`, day 2 | 19 kinds of failure, each falling back with its outcome or not falling back; the unanswered rule (a timeout skips the same provider's other target; a 500 doesn't); the last answer and only its headers; `max_attempts`; the budget off and at 0.5; open breakers skipped, then 503 with `Retry-After`; a 404 not tripping one; a probe the budget refuses handed back; weights; a client leaving or the stop ending the fallback; a stream byte for byte against the mock's own and flushed per event; 8 ways a stream fails before its first event, each falling back; errors before it mapped as usual (never an empty 200); the error event after it (a cut, a stall, the stop); the timeout between events; a slow client not taken for the provider's timeout; a client leaving mid-stream; the event reader's cases, and a fuzz test against a whole-input reference |
+| `gateway`, day 2 | 21 kinds of failure, each falling back with its outcome or not falling back; the unanswered rule (a timeout skips the same provider's other target; a 500 doesn't); the last answer and only its headers; `max_attempts`; the budget off and at 0.5; open breakers skipped, then 503 with `Retry-After`; a 404 not tripping one; a probe the budget refuses handed back; weights; a client leaving or the stop ending the fallback; a stream byte for byte against the mock's own and flushed per event; 8 ways a stream fails before its first event, each falling back; errors before it mapped as usual (never an empty 200); the error event after it (a cut, a stall, the stop); the timeout between events; a slow client not taken for the provider's timeout; a client leaving mid-stream; the event reader's cases, and a fuzz test against a whole-input reference |
 | `cmd/...` | serving, readiness and a clean stop; the drain (`/readyz` 503 while still answering); a request finishing within the grace; one still running after it getting a 503; a second signal ending the real binary at once; the server's timeouts; usage errors and exit codes |
 
 Mutation checks, run by hand: 46 mechanisms removed or broken one at a time, and each made a test fail: 26 in the
@@ -361,9 +361,14 @@ signal channel's buffer of 2 rather than 1, a defence for an interleaving no tes
 one didn't build, and reading one byte more than the response limit changes nothing (the size check still catches
 it). The commit messages list them; the three reviews found the gaps in the first counts.
 
-Day 2's mutation checks (`9e6cff7`'s message lists them): 18 mechanisms of the fallback, the router, the budget and
-the breaker broken one at a time; 16 failed a test at once. The budget's expiry survived (only a reused slot was
-tested) and is caught now; a "stop" flag for the shutdown survived because it was redundant, and was removed.
+Day 2's mutation checks (the commit messages list them): 18 mechanisms of the fallback, the router, the budget and
+the breaker broken one at a time, 16 caught at first (the budget's expiry is caught now; a redundant "stop" flag was
+removed); 17 of the relay and the mock's stream, 15 caught at first (comments before the first event dropped, and a
+clean end without `[DONE]`, are caught now). Then a review (one agent, 21 minutes, at `b3b5e1f`) reproduced four bugs
+as failing tests, kept as `review_d2_*_test.go` (a slow client cut as the provider's timeout, which I had fixed
+meanwhile; a streamed probe holding its breaker; a `[DONE]`-only stream as an answer; the mock checking
+`stream_options` after its draw), and listed 20 one-line changes no test caught; the 15 that change behaviour fail a
+test now (`health_test.go` and others).
 
 ## Design decisions
 
@@ -414,6 +419,8 @@ tested) and is caught now; a "stop" flag for the shutdown survived because it wa
 - A target is never retried within a request, even after a 429 with a short `Retry-After`; the client's SDK retries.
 - After a stream's first event there is no fallback: the client gets an error event, not another provider's answer.
 - A lone `\r` as an SSE line ending isn't recognised (OpenAI and the compatible servers use `\n`).
+- An HTTP/1.0 client can't see a broken stream's dropped connection (its bodies end when the connection does); the
+  error event is its only sign.
 - Where the mock cuts an answer depends on the cut rate (the cut and its position share one draw).
 - `/v1/chat/completions` only: no embeddings, legacy completions, files or assistants.
 - The mock counts words, not tokens.

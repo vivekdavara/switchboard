@@ -260,9 +260,10 @@ draws check the proportions.
 **When does it fall back, and when not?**
 Every attempt ends in one of three outcomes (`outcome` in gateway.go). *Answered*: a completion or an answer about
 the request (400, 413, 422) goes to the client; another provider would refuse the same bad request. *Failed*: the
-provider said it didn't do the work (429, 5xx, 401/403, 404, a redirect), or never got the whole request; any target
-may be next. *Unanswered*: it got the request and gave nothing usable (a timeout, a cut-off answer, a 200 that isn't
-JSON); other providers may be tried, this one isn't asked again. `TestEachKindOfFailureFallsBackOrNot` has 19 rows.
+provider said it didn't do the work (429, 500, 503, 401/403, 404, a redirect), or never got the whole request; any
+target may be next. *Unanswered*: it got the request and gave nothing usable (a timeout, a cut-off answer, a 200 that
+isn't JSON, or a 502, 504 or 524 from its own front end, whose back end may have done the work); other providers may
+be tried, this one isn't asked again. `TestEachKindOfFailureFallsBackOrNot` has 21 rows.
 
 **Why the difference between failed and unanswered?**
 Money. An error answer is the provider saying it didn't do it. A timeout isn't proof of anything: the provider may
@@ -379,9 +380,10 @@ I had found and fixed meanwhile, at `f514304`); a streamed probe holding its hal
 so a healthy provider was skipped as `circuit_open` for as long as one client kept reading slowly (now the success is
 reported at the first event, and a later break through `Breaker.Fail`); a stream of nothing but `data: [DONE]`
 committing an empty 200 and a success; and the mock checking `stream_options` after its random draw, so a refusal
-could become an injected 500 and shifted every later fate. Its suspicions gave six more changes (a provider's own
-502, 504 and 524 count as unanswered; no budget spent once the client has left; pings aren't progress; broken
-streams log at WARN; the budget counts only requests that made an attempt; a misleading comment), and its list of
+could become an injected 500 and shifted every later fate. Its suspicions gave seven more changes (a first event
+that isn't a JSON chunk falls back; a provider's own 502, 504 and 524 count as unanswered; no budget spent once the
+client has left; pings aren't progress; broken streams log at WARN; the budget counts only requests that made an
+attempt; a misleading comment), and its list of
 one-line changes no test caught gave the tests in `health_test.go` and five more; each now fails when its line is
 broken.
 
