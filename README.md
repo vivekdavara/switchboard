@@ -338,7 +338,7 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (149 test and fuzz functions, about 10 s;
+`make check` runs gofmt, `go vet` and `go test -race` over every package (156 test and fuzz functions, about 20 s;
 coverage 96.4% across packages with `go test -coverpkg=./...`);
 CI runs the same on Ubuntu 24.04, then `make demo`'s script with the SDK checks as a second job.
 
@@ -373,7 +373,10 @@ meanwhile; a streamed probe holding its breaker; a `[DONE]`-only stream as an an
 `stream_options` after its draw), and listed 24 one-line changes no test caught. Each was run as a mutant here
 afterwards: all 24 fail a test now (`health_test.go` and others). A second review (one agent, at `ff95f4f`, of the
 fixes only) found that the first fix for the streamed probe had reported every stream's start as a success, so breaks
-after the first chunk never added up to an open breaker; now only a probe reports early.
+after the first chunk never added up to an open breaker (now only a probe reports early), and that a stream
+starting with a byte order mark, which the SSE grammar allows, was refused. Of its 10 one-line survivors, 8 fail a
+test now; the check between attempts survives (no test can make a client leave exactly between two attempts), and so
+does the same check before the first attempt, which is equivalent in practice.
 
 ## Design decisions
 
