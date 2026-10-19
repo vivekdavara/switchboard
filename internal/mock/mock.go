@@ -213,6 +213,15 @@ func (p *Provider) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		openai.WriteError(w, e)
 		return
 	}
+	// Like every refusal, before the draw: a request OpenAI refuses gets its 400 whatever its fate would have been,
+	// and takes no draw, so it doesn't shift the fates after it (checked after the draw, it did both; found in the
+	// day-2 review).
+	includeUsage, e := streamOptions(req)
+	if e != nil {
+		p.refused.Add(1)
+		openai.WriteError(w, e)
+		return
+	}
 
 	f := p.draw()
 	switch {
@@ -236,12 +245,6 @@ func (p *Provider) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		panic(http.ErrAbortHandler)
 	}
 
-	includeUsage, e := streamOptions(req)
-	if e != nil {
-		p.refused.Add(1)
-		openai.WriteError(w, e)
-		return
-	}
 	ttft := time.Duration(float64(p.cfg.TTFT) * f.ttftF)
 	perToken := time.Duration(float64(p.cfg.PerToken) * f.perTokenF)
 	c := p.answer(req, tokens, choices)
