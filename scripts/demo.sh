@@ -82,10 +82,11 @@ else
   echo "skip  the OpenAI SDK checks: no SDK_PYTHON and no .venv with openai"
 fi
 
+# smart's standby is mock-a: with mock-b gone, the gateway falls back to it.
 kill "$mock_b"
 wait "$mock_b" 2>/dev/null || true
 mapfile -d '' args < <(chat "$(ask smart)")
-check "smart, with mock-b down"     502 '"code":"upstream_unavailable"' "${args[@]}"
+check "smart, with mock-b down"     200 'This is mock-a answering as mock-large' "${args[@]}"
 
 echo
 echo "The gateway's log (run/switchboard.log), one line per request:"

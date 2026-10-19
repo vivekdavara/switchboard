@@ -214,7 +214,7 @@ provider mock-a: http://127.0.0.1:8118/v1, timeout 10s, no key
 provider mock-b: http://127.0.0.1:8119/v1, timeout 10s, no key
 retry budget 0.2 a request + 1 a second; circuit breaker after 5 failures, cooldown 10s
 model fast (also gpt-4o-mini) -> mock-a as mock-small (weight 1); no fallback
-model smart -> mock-b as mock-large (weight 1); no fallback
+model smart -> mock-b as mock-large (weight 1), mock-a as mock-large (weight 0); up to 2 attempts
 model mock-small -> mock-a as mock-small (weight 1); no fallback
 `
 	if code != 0 || out.String() != want {

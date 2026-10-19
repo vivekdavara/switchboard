@@ -12,16 +12,23 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
+	mathrand "math/rand/v2"
 	"mime"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/vivekdavara/switchboard/internal/breaker"
+	"github.com/vivekdavara/switchboard/internal/budget"
 	"github.com/vivekdavara/switchboard/internal/config"
 	"github.com/vivekdavara/switchboard/internal/openai"
+	"github.com/vivekdavara/switchboard/internal/route"
 )
 
 // ErrShutdown is the cause the server's base context is cancelled with when the shutdown grace runs out. A request
@@ -39,6 +46,10 @@ type Gateway struct {
 	mux    *http.ServeMux
 	ready  atomic.Bool
 	newID  func() string
+
+	intn     func(n int) int // the router's randomness: a uniform integer in [0, n)
+	budget   *budget.Budget
+	breakers map[string]*breaker.Breaker // by provider name
 }
 
 // New makes a gateway for cfg, forwarding through transport (NewTransport's if nil) and logging to log. It isn't
@@ -54,9 +65,15 @@ func New(cfg *config.Config, transport http.RoundTripper, log *slog.Logger) *Gat
 			// A provider has no business redirecting an API call; a redirect is an answer like any other 3xx (502).
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		log:   log,
-		mux:   http.NewServeMux(),
-		newID: newRequestID,
+		log:      log,
+		mux:      http.NewServeMux(),
+		newID:    newRequestID,
+		intn:     mathrand.IntN,
+		budget:   budget.New(cfg.RetryBudget, nil),
+		breakers: map[string]*breaker.Breaker{},
+	}
+	for _, p := range cfg.Providers {
+		g.breakers[p.Name] = breaker.New(cfg.Breaker, nil)
 	}
 	g.mux.HandleFunc("POST /v1/chat/completions", g.chat)
 	g.mux.HandleFunc("GET /v1/models", g.models)
@@ -165,9 +182,12 @@ type exchange struct {
 	upstreamTook    time.Duration
 	requestBytes    int
 	responseBytes   int
-	code            string // the error's code, if the gateway answered with one
-	err             error  // the cause behind it, for the log only
-	upstreamSent    bool   // the request went upstream, so the upstream fields mean something
+	code            string       // the error's code, if the gateway answered with one
+	err             error        // the cause behind it, for the log only
+	upstreamSent    bool         // the request went upstream, so the upstream fields mean something
+	attempts        []attemptLog // the attempts made, in order
+	tried           []attemptLog // the attempts and the targets skipped, in order
+	budgetSpent     bool         // a retry was refused by the retry budget
 }
 
 func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
@@ -240,30 +260,175 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Route.
-	route, ok := g.cfg.Route(req.Model)
+	model, ok := g.cfg.Route(req.Model)
 	if !ok {
 		g.fail(w, x, openai.Errorf(http.StatusNotFound, openai.TypeInvalidRequest, "model", "model_not_found",
 			"the model %q is not served here; GET /v1/models lists the ones that are", req.Model), nil)
 		return
 	}
-	target := route.Targets[0]
-	x.provider, x.upstreamModel = target.Provider.Name, target.UpstreamModel
-	w.Header().Set("X-Switchboard-Provider", target.Provider.Name)
 
-	// 6 to 8. Rewrite, forward, answer.
-	g.forward(w, r, x, target, req.WithModel(target.UpstreamModel))
+	// 6 to 8, once per target until one answers: rewrite, forward, answer. DESIGN.md, "Fallback".
+	g.budget.Request()
+	var last *result
+	var probeAt time.Time       // the earliest an open breaker skipped here lets a probe through
+	unsure := map[string]bool{} // providers that may still be working on an earlier attempt
+	for _, t := range route.Order(model.Targets, g.intn) {
+		if len(x.attempts) == model.MaxAttempts {
+			break
+		}
+		if unsure[t.Provider.Name] {
+			x.skip(t, "unanswered_before")
+			continue
+		}
+		ticket, ok, at := g.breakers[t.Provider.Name].Allow()
+		if !ok {
+			x.skip(t, "circuit_open")
+			if probeAt.IsZero() || at.Before(probeAt) {
+				probeAt = at
+			}
+			continue
+		}
+		if len(x.attempts) > 0 && !g.budget.Retry() {
+			ticket.Release()
+			x.budgetSpent = true
+			break
+		}
+		res := g.try(r, x, t, req.WithModel(t.UpstreamModel))
+		switch res.health {
+		case healthy:
+			ticket.Success()
+		case unhealthy:
+			ticket.Failure()
+		default:
+			ticket.Release()
+		}
+		if res.gone {
+			// The client went away, or half-closed its side, which net/http also reports as gone. Drop the
+			// connection: returning without writing would make net/http send an empty 200 to a client that may still
+			// be reading (found in the day-1 review). The log line still runs, deferred.
+			x.status, x.err = StatusClientClosed, res.cause
+			panic(http.ErrAbortHandler)
+		}
+		last = &res
+		if res.kind == answered {
+			break
+		}
+		if res.kind == unanswered {
+			unsure[t.Provider.Name] = true
+		}
+	}
+
+	if last == nil { // every target was skipped: their breakers are open
+		wait := max(time.Until(probeAt), 0)
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(max(wait.Seconds(), 1)))))
+		g.fail(w, x, upstreamError(http.StatusServiceUnavailable, "circuit_open",
+			"every provider of %q is failing and resting (circuit open); retry after %s", req.Model,
+			wait.Round(time.Millisecond)), nil)
+		return
+	}
+	w.Header().Set("X-Switchboard-Provider", x.provider)
+	w.Header().Set("X-Switchboard-Attempts", strconv.Itoa(len(x.attempts)))
+	if last.err != nil {
+		for k, v := range last.header {
+			w.Header()[k] = v
+		}
+		g.fail(w, x, last.err, last.cause)
+		return
+	}
+	g.pass(w, x, last.status, last.body, last.header)
 }
 
-// forward sends the rewritten body to the target's provider and writes what the client gets.
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, x *exchange, target config.Target, body []byte) {
-	p := target.Provider
+// What an attempt's answer means for the request.
+type outcome int
+
+const (
+	// answered: the answer goes to the client, whatever it is (a completion, or an error about the request).
+	answered outcome = iota
+	// failed: the provider didn't do the work (it answered with an error about itself, or never got the request),
+	// so any other target may be tried.
+	failed
+	// unanswered: the provider got the request and gave no usable answer (it timed out, broke off, or answered
+	// garbage), so it may have done the work and may bill for it. Other providers may be tried; this one isn't
+	// sent the request again.
+	unanswered
+)
+
+func (o outcome) String() string { return [...]string{"answered", "failed", "unanswered"}[o] }
+
+// What an attempt says about the provider, for its breaker.
+type health int
+
+const (
+	neutral health = iota // nothing (the client left; the provider doesn't know the upstream model)
+	healthy
+	unhealthy
+)
+
+// result is one attempt, and what the client gets if no other target is tried after it.
+type result struct {
+	kind   outcome
+	health health
+	gone   bool // the client went away: drop the connection
+
+	status int         // passed through: the provider's status and bytes,
+	body   []byte      //
+	header http.Header // and the headers kept with them (Retry-After);
+	err    *openai.Error
+	cause  error // or the gateway's own error, and its cause for the log
+}
+
+// attemptLog is one attempt or one skipped target, as the log line lists it.
+type attemptLog struct {
+	Provider      string  `json:"provider"`
+	UpstreamModel string  `json:"upstream_model"`
+	Status        int     `json:"status,omitempty"` // the provider's, if it answered
+	Ms            float64 `json:"ms,omitempty"`
+	Outcome       string  `json:"outcome,omitempty"`
+	Code          string  `json:"code,omitempty"`    // the gateway's error, if the attempt ended in one
+	Skipped       string  `json:"skipped,omitempty"` // why the target wasn't tried
+}
+
+func (x *exchange) skip(t config.Target, why string) {
+	x.tried = append(x.tried, attemptLog{Provider: t.Provider.Name, UpstreamModel: t.UpstreamModel, Skipped: why})
+}
+
+// try sends body to the target's provider and says what came of it. It writes nothing to the client.
+func (g *Gateway) try(r *http.Request, x *exchange, t config.Target, body []byte) (res result) {
+	p := t.Provider
+	x.provider, x.upstreamModel = p.Name, t.UpstreamModel
+	x.upstreamSent, x.upstreamStatus = true, 0
+	entry := attemptLog{Provider: p.Name, UpstreamModel: t.UpstreamModel}
+	sent := time.Now()
+	defer func() {
+		x.upstreamTook = time.Since(sent)
+		entry.Status, entry.Ms, entry.Outcome = x.upstreamStatus, ms(x.upstreamTook), res.kind.String()
+		if res.err != nil {
+			entry.Code = res.err.Code
+		}
+		if res.gone {
+			entry.Outcome, entry.Code = "", "client_closed"
+		}
+		x.attempts = append(x.attempts, entry)
+		x.tried = append(x.tried, entry)
+	}()
+
 	ctx, cancel := context.WithTimeout(r.Context(), p.Timeout)
 	defer cancel()
+	// Whether the provider got the whole request decides whether a failure may have cost it work: one that never
+	// did can't have started (DESIGN.md, "Fallback").
+	var delivered atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				delivered.Store(true)
+			}
+		},
+	})
 	up, err := http.NewRequestWithContext(ctx, http.MethodPost, p.BaseURL+"/chat/completions",
 		bytes.NewReader(body))
 	if err != nil { // the base URL was checked at load, so this can't happen
-		g.fail(w, x, upstreamError(http.StatusBadGateway, "upstream_error", "the provider's URL is invalid"), err)
-		return
+		return result{kind: answered, err: upstreamError(http.StatusBadGateway, "upstream_error",
+			"the provider's URL is invalid"), cause: err}
 	}
 	// The allowlist: nothing of the client's headers goes upstream.
 	up.Header = http.Header{
@@ -275,83 +440,85 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, x *exchange, t
 		up.Header.Set("Authorization", "Bearer "+p.APIKey)
 	}
 
-	sent := time.Now()
-	x.upstreamSent = true
 	resp, err := g.client.Do(up)
 	if err != nil {
-		x.upstreamTook = time.Since(sent)
-		g.failUpstream(w, r, ctx, x, p, err)
-		return
+		return g.unreached(r, ctx, p, err, delivered.Load())
 	}
 	x.upstreamStatus = resp.StatusCode
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, g.cfg.MaxResponseBytes+1))
 	resp.Body.Close()
-	x.upstreamTook = time.Since(sent)
 	if err != nil {
-		g.failUpstream(w, r, ctx, x, p, err)
-		return
+		return g.unreached(r, ctx, p, err, true)
 	}
 	if int64(len(answer)) > g.cfg.MaxResponseBytes {
-		g.fail(w, x, upstreamError(http.StatusBadGateway, "upstream_error",
-			"the provider %s answered with more than %d bytes", p.Name, g.cfg.MaxResponseBytes), nil)
-		return
+		// The provider did the work; another would most likely write as much.
+		return result{kind: answered, err: upstreamError(http.StatusBadGateway, "upstream_error",
+			"the provider %s answered with more than %d bytes", p.Name, g.cfg.MaxResponseBytes)}
 	}
 
-	// The mapping table: an answer about the request passes through; anything else is the gateway's error.
+	// The mapping table: an answer about the request passes through; anything else is the gateway's error, and
+	// a reason to try another target.
 	switch status := resp.StatusCode; {
 	case status == http.StatusOK && jsonObject(answer):
-		g.pass(w, x, status, answer, nil)
+		return result{kind: answered, health: healthy, status: status, body: answer}
 	case status == http.StatusOK:
-		g.fail(w, x, upstreamError(http.StatusBadGateway, "upstream_error",
-			"the provider %s answered 200 without a JSON object", p.Name), nil)
+		return result{kind: unanswered, health: unhealthy, err: upstreamError(http.StatusBadGateway,
+			"upstream_error", "the provider %s answered 200 without a JSON object", p.Name)}
 	case status == http.StatusBadRequest || status == http.StatusRequestEntityTooLarge ||
 		status == http.StatusUnprocessableEntity || status == http.StatusTooManyRequests:
-		var keep http.Header
-		if status == http.StatusTooManyRequests && resp.Header.Get("Retry-After") != "" {
-			keep = http.Header{"Retry-After": {resp.Header.Get("Retry-After")}}
+		res = result{kind: answered, health: healthy, status: status, body: answer}
+		if status == http.StatusTooManyRequests {
+			// The provider is rate-limiting the gateway's key: another target may have room.
+			res.kind, res.health = failed, unhealthy
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				res.header = http.Header{"Retry-After": {ra}}
+			}
 		}
 		if !jsonObject(answer) {
 			typ := openai.TypeInvalidRequest
 			if status == http.StatusTooManyRequests {
 				typ = openai.TypeRateLimit
 			}
-			for k, v := range keep {
-				w.Header()[k] = v
-			}
-			g.fail(w, x, openai.Errorf(status, typ, "", "upstream_error",
-				"the provider %s answered %d without a JSON error", p.Name, status), nil)
-			return
+			res.body, res.err = nil, openai.Errorf(status, typ, "", "upstream_error",
+				"the provider %s answered %d without a JSON error", p.Name, status)
 		}
-		g.pass(w, x, status, answer, keep)
+		return res
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		g.fail(w, x, upstreamError(http.StatusBadGateway, "upstream_auth",
-			"the provider %s refused the gateway's credentials (%d)", p.Name, status), nil)
+		return result{kind: failed, health: unhealthy, err: upstreamError(http.StatusBadGateway, "upstream_auth",
+			"the provider %s refused the gateway's credentials (%d)", p.Name, status)}
+	case status == http.StatusNotFound:
+		// About this target (the provider doesn't know its upstream model, or the base URL is wrong), not about
+		// the provider's health: its other models may be fine, so its breaker isn't told.
+		return result{kind: failed, err: upstreamError(http.StatusBadGateway, "upstream_error",
+			"the provider %s answered %d", p.Name, status)}
 	default:
-		g.fail(w, x, upstreamError(http.StatusBadGateway, "upstream_error", "the provider %s answered %d",
-			p.Name, status), nil)
+		return result{kind: failed, health: unhealthy, err: upstreamError(http.StatusBadGateway, "upstream_error",
+			"the provider %s answered %d", p.Name, status)}
 	}
 }
 
-// failUpstream answers a request whose upstream exchange failed with err: the client went away, the gateway is
-// shutting down, the provider took longer than its timeout, or it couldn't be reached or broke off.
-func (g *Gateway) failUpstream(w http.ResponseWriter, r *http.Request, ctx context.Context, x *exchange,
-	p *config.Provider, err error) {
+// unreached is the result of an attempt that got no complete answer: the client went away, the gateway is shutting
+// down, the provider took longer than its timeout, or it couldn't be reached or broke off. delivered says whether the
+// provider got the whole request.
+func (g *Gateway) unreached(r *http.Request, ctx context.Context, p *config.Provider, err error,
+	delivered bool) result {
+	kind := failed
+	if delivered {
+		kind = unanswered
+	}
 	switch {
 	case r.Context().Err() != nil && context.Cause(r.Context()) == ErrShutdown:
-		g.fail(w, x, openai.Errorf(http.StatusServiceUnavailable, openai.TypeServer, "", "shutting_down",
-			"the gateway is shutting down; retry"), err)
+		// Final: every attempt after this one would be cancelled too.
+		return result{kind: answered, err: openai.Errorf(http.StatusServiceUnavailable,
+			openai.TypeServer, "", "shutting_down", "the gateway is shutting down; retry"), cause: err}
 	case r.Context().Err() != nil:
-		// The client went away, or half-closed its side, which net/http also reports as gone. Drop the connection:
-		// returning without writing would make net/http send an empty 200 to a client that may still be reading
-		// (found in the day-1 review). The log line still runs, deferred.
-		x.status, x.err = StatusClientClosed, err
-		panic(http.ErrAbortHandler)
+		return result{gone: true, cause: err}
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		g.fail(w, x, upstreamError(http.StatusGatewayTimeout, "upstream_timeout",
-			"the provider %s didn't answer within %s", p.Name, p.Timeout), err)
+		return result{kind: kind, health: unhealthy, err: upstreamError(http.StatusGatewayTimeout,
+			"upstream_timeout", "the provider %s didn't answer within %s", p.Name, p.Timeout), cause: err}
 	default:
-		g.fail(w, x, upstreamError(http.StatusBadGateway, "upstream_unavailable",
-			"the provider %s couldn't be reached or broke off", p.Name), err)
+		return result{kind: kind, health: unhealthy, err: upstreamError(http.StatusBadGateway,
+			"upstream_unavailable", "the provider %s couldn't be reached or broke off", p.Name), cause: err}
 	}
 }
 
@@ -391,6 +558,15 @@ func (g *Gateway) logExchange(x *exchange) {
 	if x.upstreamSent {
 		attrs = append(attrs, slog.Int("upstream_status", x.upstreamStatus),
 			slog.Float64("upstream_ms", ms(x.upstreamTook)))
+	}
+	if len(x.tried) > 0 {
+		attrs = append(attrs, slog.Int("attempts", len(x.attempts)))
+	}
+	if len(x.tried) > 1 || len(x.attempts) != len(x.tried) { // more than the fields above say
+		attrs = append(attrs, slog.Any("tried", x.tried))
+	}
+	if x.budgetSpent {
+		attrs = append(attrs, slog.Bool("retry_budget_spent", true))
 	}
 	if x.code != "" {
 		attrs = append(attrs, slog.String("code", x.code))

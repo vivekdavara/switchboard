@@ -99,6 +99,17 @@ func TestRequestsAndRetriesExpireAfterTheWindow(t *testing.T) {
 	}
 }
 
+func TestAnOldSlotStopsCountingEvenIfNoSecondReusesIt(t *testing.T) {
+	c := newClock()
+	b := New(config.RetryBudget{Ratio: 1}, c.now)
+	b.Request()
+	// 15 s later this second's slot is a different one from the request's, which nothing has cleared.
+	c.add(15 * time.Second)
+	if b.Retry() {
+		t.Error("a request from 15 s ago paid for a retry")
+	}
+}
+
 func TestASlotIsReusedOnlyForItsOwnSecond(t *testing.T) {
 	c := newClock()
 	b := New(config.RetryBudget{Ratio: 1}, c.now)
