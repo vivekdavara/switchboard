@@ -107,6 +107,23 @@ func (t *Ticket) Failure() { t.report(false, false) }
 // stopping, the provider doesn't know the upstream model). A probe released lets the next request probe.
 func (t *Ticket) Release() { t.report(false, true) }
 
+// Fail counts a failure seen after its attempt's ticket has already reported: a streamed answer whose first event
+// was reported as a success (the provider answered, and a half-open breaker shouldn't wait for the whole stream to
+// learn that), and which then broke. It counts in the breaker's state now: one more failure in a row while closed,
+// nothing while open (the provider is skipped already) or half-open (a probe decides that state).
+func (b *Breaker) Fail() {
+	if b.failures == 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state == Closed {
+		if b.inARow++; b.inARow >= b.failures {
+			b.trip()
+		}
+	}
+}
+
 func (t *Ticket) report(ok, neutral bool) {
 	if t == nil || t.b == nil || t.done {
 		return

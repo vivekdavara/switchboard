@@ -294,12 +294,17 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			x.budgetSpent = true
 			break
 		}
-		res := g.try(w, r, x, t, req.WithModel(t.UpstreamModel), req.Stream, len(x.attempts)+1)
+		res := g.try(w, r, x, t, req.WithModel(t.UpstreamModel), req.Stream, len(x.attempts)+1, ticket)
 		switch res.health {
 		case healthy:
 			ticket.Success()
 		case unhealthy:
 			ticket.Failure()
+			if res.written {
+				// A stream reports its first event as a success, at the commit (relay), so its ticket has reported
+				// already; its break after that is a failure seen now.
+				g.breakers[t.Provider.Name].Fail()
+			}
 		default:
 			ticket.Release()
 		}
@@ -326,11 +331,12 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if last == nil { // every target was skipped: their breakers are open
-		wait := max(time.Until(probeAt), 0)
-		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(max(wait.Seconds(), 1)))))
+		// At least a second: a probe may be out (its breaker can say only "now"), and Retry-After counts in seconds.
+		secs := int(math.Ceil(max(time.Until(probeAt).Seconds(), 1)))
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		w.Header().Set("X-Switchboard-Attempts", "0")
 		g.fail(w, x, upstreamError(http.StatusServiceUnavailable, "circuit_open",
-			"every provider of %q is failing and resting (circuit open); retry after %s", req.Model,
-			wait.Round(time.Millisecond)), nil)
+			"every provider of %q is failing and resting (circuit open); retry after %ds", req.Model, secs), nil)
 		return
 	}
 	w.Header().Set("X-Switchboard-Provider", x.provider)
@@ -403,7 +409,7 @@ func (x *exchange) skip(t config.Target, why string) {
 // try sends body to the target's provider and says what came of it. It writes nothing to the client, unless a
 // stream starts: then it writes the whole stream (relay).
 func (g *Gateway) try(w http.ResponseWriter, r *http.Request, x *exchange, t config.Target, body []byte, stream bool,
-	attempt int) (res result) {
+	attempt int, ticket *breaker.Ticket) (res result) {
 	p := t.Provider
 	x.provider, x.upstreamModel = p.Name, t.UpstreamModel
 	x.upstreamSent, x.upstreamStatus = true, 0
@@ -463,7 +469,7 @@ func (g *Gateway) try(w http.ResponseWriter, r *http.Request, x *exchange, t con
 	}
 	x.upstreamStatus = resp.StatusCode
 	if stream && resp.StatusCode == http.StatusOK && eventStream(resp.Header.Get("Content-Type")) {
-		return g.relay(w, r, x, ctx, p, attempt, timer, resp)
+		return g.relay(w, r, x, ctx, p, attempt, timer, ticket, resp)
 	}
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, g.cfg.MaxResponseBytes+1))
 	resp.Body.Close()

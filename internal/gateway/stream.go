@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/vivekdavara/switchboard/internal/breaker"
 	"github.com/vivekdavara/switchboard/internal/config"
 	"github.com/vivekdavara/switchboard/internal/openai"
 )
@@ -127,8 +128,13 @@ func eventStream(contentType string) bool {
 // provider: it is stopped while an event is written to the client and started again for the next, so a client that
 // reads slowly (blocking the writes) isn't taken for a provider making no progress. (Before this, a client that paused
 // for longer than the timeout got a healthy stream cut as upstream_timeout, and the provider's breaker counted it.)
+//
+// ticket is the attempt's breaker ticket. The first event is reported on it as a success at the commit: the provider
+// has answered, and a half-open breaker whose probe this is mustn't stay half-open (skipping a healthy provider for
+// every other request) for as long as the stream lasts, which is as long as its client cares to read (found in the
+// day-2 review). A break after that is reported by the caller as a failure seen then (Breaker.Fail).
 func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx context.Context, p *config.Provider,
-	attempt int, timer *time.Timer, resp *http.Response) result {
+	attempt int, timer *time.Timer, ticket *breaker.Ticket, resp *http.Response) result {
 	defer resp.Body.Close()
 	events := newEventReader(resp.Body, g.cfg.MaxResponseBytes)
 	var first sseEvent
@@ -160,6 +166,7 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 
 	// The first event commits the response.
 	timer.Stop()
+	ticket.Success()
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")

@@ -200,3 +200,37 @@ func TestConcurrentFailuresOpenItOnce(t *testing.T) {
 	// It opened once, at the third failure; the refusals since didn't move the end of its cooldown.
 	refused(t, b, c.now().Add(10*time.Second))
 }
+
+func TestALateFailureCountsInTheStateItArrivesIn(t *testing.T) {
+	b, c := setup()
+	// Closed: it counts like any failure, and the third in a row opens the breaker.
+	allow(t, b).Failure()
+	b.Fail()
+	if b.State() != Closed {
+		t.Fatalf("%s after 2 failures", b.State())
+	}
+	b.Fail()
+	if b.State() != Open {
+		t.Fatalf("%s after 3", b.State())
+	}
+	// Open: it doesn't restart the cooldown.
+	c.add(5 * time.Second)
+	b.Fail()
+	refused(t, b, c.now().Add(5*time.Second))
+	// Half-open: the probe decides, not a late failure.
+	c.add(5 * time.Second)
+	probe := allow(t, b)
+	b.Fail()
+	probe.Success()
+	if b.State() != Closed {
+		t.Errorf("%s: a late failure decided for the probe", b.State())
+	}
+	// Breakers off: nothing.
+	off := New(config.Breaker{}, nil)
+	for range 10 {
+		off.Fail()
+	}
+	if off.State() != Closed {
+		t.Errorf("%s", off.State())
+	}
+}
