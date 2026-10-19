@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -249,5 +250,34 @@ func TestARaisedCutRateOnlyAddsCuts(t *testing.T) {
 		if (none[i] == "fail") != (high[i] == "fail") {
 			t.Fatalf("request %d: %s without cuts, %s with", i, none[i], high[i])
 		}
+	}
+}
+
+func TestACutIsDecidedByTheFourthDraw(t *testing.T) {
+	// DESIGN.md: each request takes four numbers from a PCG seeded with the seed; the fourth decides a cut (below
+	// the cut rate) and, divided by the rate, where it breaks. Draw the same numbers here and compare.
+	cfg := fast()
+	cfg.CutRate, cfg.Seed = 0.3, 11
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := rand.New(rand.NewPCG(11, 0x5157))
+	cuts := 0
+	for i := range 2000 {
+		ref.Float64()
+		ref.Float64()
+		ref.Float64()
+		c := ref.Float64()
+		f := p.draw()
+		if f.cut != (c < 0.3) || (f.cut && f.cutAt != c/0.3) {
+			t.Fatalf("request %d: cut %v at %v; the fourth draw %v says %v at %v", i, f.cut, f.cutAt, c, c < 0.3, c/0.3)
+		}
+		if f.cut {
+			cuts++
+		}
+	}
+	if cuts < 500 || cuts > 700 {
+		t.Errorf("%d cuts in 2,000 at 0.3", cuts)
 	}
 }

@@ -76,3 +76,24 @@ func TestOrderLeavesItsInputAlone(t *testing.T) {
 		t.Errorf("the model's targets were reordered: %s", names(ts))
 	}
 }
+
+func TestTheFallbackFollowsTheWeightsLeft(t *testing.T) {
+	// a 3, b 2, c 1: once a is first, b should be second in 2 of 3 orders and c in 1 (the weights left, 2 and 1).
+	// Drawing the second over the whole 6 instead would give c 4 of 6 (the day-2 review's survivor).
+	ts := targets("a", 3, "b", 2, "c", 1)
+	rng := rand.New(rand.NewPCG(3, 4))
+	afterA, bSecond := 0, 0
+	for range 60000 {
+		o := Order(ts, rng.IntN)
+		if o[0].Provider.Name == "a" {
+			afterA++
+			if o[1].Provider.Name == "b" {
+				bSecond++
+			}
+		}
+	}
+	p := 2.0 / 3
+	if d := math.Abs(float64(bSecond) - p*float64(afterA)); d > 5*math.Sqrt(float64(afterA)*p*(1-p)) {
+		t.Errorf("b was second in %d of %d orders after a, want about %.0f", bSecond, afterA, p*float64(afterA))
+	}
+}

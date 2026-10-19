@@ -94,7 +94,8 @@ func TestAStreamIsRelayedEventByEventAsItArrives(t *testing.T) {
 	resp, got, err := readStream(t, srv, askStream)
 	if err != nil || resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/event-stream" ||
 		resp.Header.Get("X-Switchboard-Provider") != "p0" || resp.Header.Get("X-Switchboard-Attempts") != "1" ||
-		!requestID.MatchString(resp.Header.Get("X-Request-Id")) || resp.Header.Get("Cache-Control") != "no-cache" {
+		!requestID.MatchString(resp.Header.Get("X-Request-Id")) || resp.Header.Get("Cache-Control") != "no-cache" ||
+		resp.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("%d %v %v", resp.StatusCode, resp.Header, err)
 	}
 	if len(got) != len(want) {
@@ -190,12 +191,18 @@ func TestBeforeItsFirstEventAStreamsFailureIsAnErrorLikeAnyOther(t *testing.T) {
 		h      http.Handler
 		status int
 		code   string
+		says   string
 	}{
-		{"a 400 passes through", answering(400, `{"error":{"message":"bad","type":"invalid_request_error"}}`), 400, ""},
-		{"an empty stream is not an empty 200", streaming(nil, 0, false), 502, "upstream_error"},
+		{"a 400 passes through", answering(400, `{"error":{"message":"bad","type":"invalid_request_error"}}`), 400, "",
+			"bad"},
+		{"an empty stream is not an empty 200", streaming(nil, 0, false), 502, "upstream_error",
+			"before its first event"},
 		{"a stream over the limit", streaming([]string{"data: " + strings.Repeat("x", 3000) + "\n\n"}, 0, false),
-			502, "upstream_error"},
-		{"no event within the timeout", streaming(nil, 2*time.Second, false), 504, "upstream_timeout"},
+			502, "upstream_error", "streamed more than 2000 bytes"},
+		{"no event within the timeout", streaming(nil, 2*time.Second, false), 504, "upstream_timeout",
+			"no progress"},
+		{"JSON instead of a stream", answering(200, `{"id":"c","object":"chat.completion","choices":[]}`), 502,
+			"upstream_error", "without an event stream"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p0 := newProvider(t, tc.h)
@@ -205,10 +212,18 @@ func TestBeforeItsFirstEventAStreamsFailureIsAnErrorLikeAnyOther(t *testing.T) {
 			if resp.StatusCode != tc.status || resp.Header.Get("Content-Type") != "application/json" {
 				t.Fatalf("%d %v %s", resp.StatusCode, resp.Header, b)
 			}
-			if _, code, _, _ := errorOf(t, b); code != tc.code {
-				t.Errorf("code %q, want %q", code, tc.code)
+			if _, code, _, msg := errorOf(t, b); code != tc.code || !strings.Contains(msg, tc.says) {
+				t.Errorf("code %q %q, want %q saying %q", code, msg, tc.code, tc.says)
 			}
 		})
+	}
+	// Over the limit before the first event is answered, as an answer over the limit is: no fallback.
+	p0 := newProvider(t, streaming([]string{"data: " + strings.Repeat("x", 3000) + "\n\n"}, 0, false))
+	p1 := newProvider(t, pacedMock(t, "mock-b", 0, nil))
+	srv, _, _ := gatewayFor(t, `"max_response_bytes":2000`, []string{at(p0, ""), at(p1, "")},
+		inOrder("m", "p0/mock-small", "p1/mock-small"))
+	if resp, b := send(t, srv, askStream); resp.StatusCode != 502 || len(p1.requests()) != 0 {
+		t.Errorf("%d %s; the fallback got %d", resp.StatusCode, b, len(p1.requests()))
 	}
 }
 
@@ -445,8 +460,9 @@ func TestASlowClientIsNotTheProvidersTimeout(t *testing.T) {
 }
 
 func TestCommentsBeforeTheFirstEventReachTheClientWithIt(t *testing.T) {
-	up := newProvider(t, streaming([]string{": ping\n\n", ": still here\n\n", chunk, "data: [DONE]\n\n"}, 0, false))
-	srv, _, _ := gatewayFor(t, "", []string{at(up, "")}, "m=p0/x")
+	sent := []string{": ping\n\n", ": still here\n\n", chunk, ": and after\n\n", chunk, "data: [DONE]\n\n"}
+	up := newProvider(t, streaming(sent, 0, false))
+	srv, _, logs := gatewayFor(t, "", []string{at(up, "")}, "m=p0/x")
 	resp, events, err := readStream(t, srv, askStream)
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("%d %v", resp.StatusCode, err)
@@ -455,8 +471,11 @@ func TestCommentsBeforeTheFirstEventReachTheClientWithIt(t *testing.T) {
 	for _, e := range events {
 		got = append(got, e.raw)
 	}
-	if want := []string{": ping\n\n", ": still here\n\n", chunk, "data: [DONE]\n\n"}; fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("the client got %q, want the provider's events byte for byte, %q", got, want)
+	if fmt.Sprint(got) != fmt.Sprint(sent) {
+		t.Errorf("the client got %q, want the provider's events byte for byte, %q", got, sent)
+	}
+	if !strings.Contains(logs.String(), `"events":2`) { // comments aren't chunks, before the first or after it
+		t.Errorf("log: %s", logs)
 	}
 }
 
