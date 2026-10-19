@@ -439,3 +439,36 @@ func TestASlowClientIsNotTheProvidersTimeout(t *testing.T) {
 		t.Errorf("%+v, breaker %s", x, g.breakers["p0"].State())
 	}
 }
+
+func TestCommentsBeforeTheFirstEventReachTheClientWithIt(t *testing.T) {
+	up := newProvider(t, streaming([]string{": ping\n\n", ": still here\n\n", chunk, "data: [DONE]\n\n"}, 0, false))
+	srv, _, _ := gatewayFor(t, "", []string{at(up, "")}, "m=p0/x")
+	resp, events, err := readStream(t, srv, askStream)
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("%d %v", resp.StatusCode, err)
+	}
+	var got []string
+	for _, e := range events {
+		got = append(got, e.raw)
+	}
+	if want := []string{": ping\n\n", ": still here\n\n", chunk, "data: [DONE]\n\n"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("the client got %q, want the provider's events byte for byte, %q", got, want)
+	}
+}
+
+func TestAStreamThatEndsWithoutDoneIsBroken(t *testing.T) {
+	// The provider ends its body cleanly after two chunks, without data: [DONE]: the answer may be incomplete, so
+	// the client must not be able to take it for a finished one.
+	up := newProvider(t, streaming([]string{chunk, chunk}, 0, false))
+	srv, g, logs := gatewayFor(t, `"circuit_breaker":{"failures":1}`, []string{at(up, "")}, "m=p0/x")
+	resp, events, err := readStream(t, srv, askStream)
+	if resp.StatusCode != 200 || err == nil || len(events) != 3 {
+		t.Fatalf("%d, %d events, %v", resp.StatusCode, len(events), err)
+	}
+	if code := lastEventError(t, events); code != "upstream_unavailable" {
+		t.Errorf("code %q", code)
+	}
+	if x := lastExchange(t, logs); x.Code != "upstream_unavailable" || g.breakers["p0"].State().String() != "open" {
+		t.Errorf("%+v, breaker %s", x, g.breakers["p0"].State())
+	}
+}
