@@ -3,8 +3,10 @@
 # What CI runs.
 check: lint test
 
+# gofmt skips .scratch/, where review worktrees live (go vet's ./... skips dot-directories by itself): a review's
+# half-written file there once failed this check.
 lint:
-	@unformatted="$$(gofmt -l .)"; if [ -n "$$unformatted" ]; then echo "not gofmt-formatted:"; echo "$$unformatted"; exit 1; fi
+	@unformatted="$$(find . -path ./.scratch -prune -o -name '*.go' -print | xargs gofmt -l)"; if [ -n "$$unformatted" ]; then echo "not gofmt-formatted:"; echo "$$unformatted"; exit 1; fi
 	go vet ./...
 
 test:

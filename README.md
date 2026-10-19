@@ -7,11 +7,14 @@ routing by weights and aliases, fallback with retry budgets and circuit breakers
 response caching, and token and cost accounting, each measured against local mock providers that simulate latency
 and errors.
 
-**Status: day 1 of 5.** The request path works end to end for non-streamed chat completions: strict request
-reading, routing by model, forwarding with the provider's key, and a fixed mapping of every provider answer and
-failure to what the client gets. There is a deterministic mock provider, a graceful shutdown, a demo that runs the
-real binaries, and a check with the official OpenAI Python SDK. Day 2 adds routing across several targets, fallback,
-circuit breakers and streaming. See [DESIGN.md](DESIGN.md) for the specification and the plan.
+**Status: day 2 of 5.** Day 1 built the request path: strict request reading, routing by model, forwarding with the
+provider's key, and a fixed mapping of every provider answer and failure to what the client gets, with a
+deterministic mock provider, a graceful shutdown, a demo of the real binaries and a check with the official OpenAI
+Python SDK. Day 2 puts weighted targets and aliases behind each model, falls back across them (never resending to a
+provider that may already have done the work), bounds the extra load with a retry budget, skips failing providers
+with a circuit breaker each, and streams: server-sent events relayed one at a time, with fallback until the first
+event and an error event after it. Day 3 adds client keys, rate limits, caching and cost accounting. See
+[DESIGN.md](DESIGN.md) for the specification and the plan.
 
 ## Architecture
 
@@ -20,9 +23,12 @@ flowchart LR
     C["client<br/>(OpenAI SDK, curl)"] -->|"POST /v1/chat/completions"| G
     subgraph G["switchboard (127.0.0.1:8108)"]
         direction LR
-        P["read and check<br/>the body"] --> R["route: model →<br/>provider, upstream model"]
-        R --> F["forward: rewrite model,<br/>set the provider's key"]
-        F --> M["map the answer<br/>or the failure"]
+        P["read and check<br/>the body"] --> R["route: model or alias →<br/>targets in weighted order"]
+        R --> T{"next target:<br/>breaker allows?<br/>budget allows a retry?"}
+        T -->|yes| F["forward: rewrite model,<br/>set the provider's key"]
+        F -->|"failed or unanswered"| T
+        F -->|"answered, or a stream's first event"| M["answer, or relay<br/>the stream event by event"]
+        T -->|"no target left"| E["the last failure,<br/>or 503 circuit_open"]
     end
     F -->|HTTP| A["mockprovider mock-a :8118"]
     F -->|HTTP| B["mockprovider mock-b :8119"]
@@ -33,16 +39,19 @@ flowchart LR
 |---|---|
 | `internal/jsonstrict` | Accepts a body only if every JSON parser reads it the same way; returns its top-level members, values byte for byte. |
 | `internal/openai` | The request fields the gateway acts on, the rewrite of `model`, OpenAI's error shape, JSON 404s and 405s. |
-| `internal/config` | The JSON configuration, read strictly; provider keys only from environment variables. |
-| `internal/gateway` | The handler: check, route, forward, map. |
-| `internal/mock` | A mock provider: latency, errors and hangs, deterministic given a seed. |
+| `internal/config` | The JSON configuration, read strictly; provider keys only from environment variables; models with aliases and weighted targets. |
+| `internal/route` | The order one request tries a model's targets in: by weight, standbys last. |
+| `internal/budget` | The retry budget: retries as a share of requests over the last 10 seconds. |
+| `internal/breaker` | A circuit breaker per provider: closed, open, half-open with one probe; results kept to their generation. |
+| `internal/gateway` | The handler: check, route, try each target (the fallback loop), map; the SSE relay (`stream.go`). |
+| `internal/mock` | A mock provider: latency, errors, hangs and cut-offs, plain or streamed, deterministic given a seed. |
 | `cmd/switchboard` | `serve`, `check`, `version`; graceful shutdown. |
 | `cmd/mockprovider` | The mock provider as a server. |
 
 ## Quick start
 
-Go 1.27 and curl. `make demo` builds everything, starts two mock providers and the gateway, sends eight requests
-through it with curl (and eight more with the OpenAI Python SDK, if it is installed), checks each answer, and stops
+Go 1.27 and curl. `make demo` builds everything, starts two mock providers and the gateway, sends nine requests
+through it with curl (and eleven more with the OpenAI Python SDK, if it is installed), checks each answer, and stops
 everything:
 
 ```bash
@@ -54,13 +63,23 @@ ok    the models                         200
 ok    fast, through mock-a               200
 ok    smart, through mock-b              200
 ok    an unknown model                   404
-ok    streaming (day 2)                  400
+ok    streaming                          200
 ok    a model given twice                400
 ok    a form post                        415
+ok    sdk: the models                     ['fast', 'gpt-4o-mini', 'smart', 'mock-small']
 ...
-ok    smart, with mock-b down            502
+ok    sdk: streaming                      15 chunks, 12 words, length
+ok    sdk: a bad stream request           400 n
+ok    smart, with mock-b down            200
+ok    a stream that breaks               200, curl exit 18
+ok    sdk: a stream that breaks           APIError upstream_unavailable after 20 chunks
 all checks passed
 ```
+
+"smart, with mock-b down" is the fallback: mock-b is stopped, and `smart`'s standby target on mock-a answers. For
+"a stream that breaks", mock-b comes back with `-cut-rate 1`, so every answer breaks off part-way; the stream has
+started, so the client gets an error event and a cut transfer rather than a 502, and the SDK raises the event as an
+`APIError`.
 
 To run it by hand, in three terminals:
 
@@ -83,6 +102,13 @@ curl -s http://127.0.0.1:8108/v1/chat/completions -H 'Content-Type: application/
   -d '{"model":"fast","messages":[{"role":"user","content":"What does a gateway do?"}]}'
 ```
 
+Streamed, event by event (`-N` stops curl buffering):
+
+```bash
+curl -sN http://127.0.0.1:8108/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"smart","stream":true,"messages":[{"role":"user","content":"What does a gateway do?"}]}'
+```
+
 Or with the OpenAI Python SDK (`scripts/sdk_check.py` does more of this, and `make demo` runs it when `.venv` has
 the SDK: `python3.11 -m venv .venv && .venv/bin/pip install -r scripts/requirements-sdk.txt`):
 
@@ -97,12 +123,12 @@ print(reply.choices[0].message.content)  # This is mock-a answering as mock-smal
 `make check` runs what CI runs (gofmt, vet, `go test -race`). `go run ./cmd/switchboard check -config FILE`
 loads a configuration and prints its routes.
 
-## The API (day 1)
+## The API (days 1 and 2)
 
 | Method and path | What it does |
 |---|---|
-| `POST /v1/chat/completions` | Forwards a chat completion to the model's provider. `stream: true` is refused with 400 until day 2. |
-| `GET /v1/models` | The models this gateway serves, in OpenAI's list shape. |
+| `POST /v1/chat/completions` | Forwards a chat completion to one of the model's targets, falling back to the others; with `stream: true`, relays the answer as server-sent events. |
+| `GET /v1/models` | Every name the gateway answers to (each model's, then its aliases), in OpenAI's list shape, `owned_by` `switchboard`. |
 | `GET /v1/models/{model}` | One of them (404 `model_not_found` otherwise); SDKs call it to check a model exists. Names may hold slashes. |
 | `GET /livez` | 200 while the process runs, whatever the `Host` (load balancers probe by address). |
 | `GET /readyz` | 200 while serving; 503 during a stop's `drain_delay`, while everything else is still served. Any `Host`. |
@@ -134,7 +160,30 @@ What the client gets for each provider outcome:
 | is slower than its `timeout` | 504 `upstream_timeout` |
 
 If the client goes away, the provider's request is cancelled too. Each response carries `X-Request-Id` (also on
-the request to the provider and in the log line) and `X-Switchboard-Provider`.
+the request to the provider and in the log line), `X-Switchboard-Provider` (whose answer it is) and
+`X-Switchboard-Attempts`.
+
+**Fallback (day 2).** The table is what one attempt gives. A request tries the model's targets in weighted order
+(standbys of weight 0 last), at most `max_attempts` of them, each target once, and each attempt ends in one of three
+outcomes:
+
+| Outcome | When | Next |
+|---|---|---|
+| answered | a completion; 400, 413, 422; an answer over the limit; the gateway stopping | the client gets it |
+| failed (the provider didn't do the work) | 429, 5xx, 401/403, 404, a redirect, another 4xx; or it never got the whole request | any other target |
+| unanswered (it may have done the work) | it got the request, then timed out, broke off, or answered 200 without JSON | other providers only |
+
+Every retry needs the retry budget's say-so (in any 10 s, at most 0.2 retries per request plus 1 a second, by
+default), and every attempt the provider's circuit breaker's (5 failures in a row open it for 10 s, then one probe).
+When nothing more may be tried, the client gets the last attempt's answer with only its own headers; when every
+target's breaker is open, 503 `circuit_open` with `Retry-After`.
+
+**Streaming (day 2).** Nothing is written until the provider's first data event, so a stream that fails before it
+falls back like any request. The first event commits: 200, `text/event-stream`, and every event as it comes, flushed
+one at a time. A stream that breaks after that (ended before `data: [DONE]`, no progress for the provider's timeout,
+too large, the gateway stopping) gets one last event in OpenAI's error shape, which the OpenAI SDK raises as an
+`APIError`, and the connection is dropped. The provider's `timeout` is the longest wait for its next sign of
+progress: the whole answer, or a stream's next event.
 
 ## Results (day 1)
 
@@ -184,7 +233,7 @@ which the gateway uses for https providers, one connection carries many requests
 
 ## Configuration
 
-`configs/local.json` routes three models to the two mocks:
+`configs/local.json` routes three models (and an alias) to the two mocks; `smart` has a standby:
 
 ```json
 {
@@ -195,12 +244,21 @@ which the gateway uses for https providers, one connection carries many requests
     {"name": "mock-b", "base_url": "http://127.0.0.1:8119/v1", "timeout": "10s"}
   ],
   "models": [
-    {"name": "fast", "provider": "mock-a", "upstream_model": "mock-small"},
-    {"name": "smart", "provider": "mock-b", "upstream_model": "mock-large"},
+    {"name": "fast", "aliases": ["gpt-4o-mini"], "provider": "mock-a", "upstream_model": "mock-small"},
+    {"name": "smart", "targets": [
+      {"provider": "mock-b", "upstream_model": "mock-large", "weight": 1},
+      {"provider": "mock-a", "upstream_model": "mock-large", "weight": 0}
+    ]},
     {"name": "mock-small", "provider": "mock-a"}
   ]
 }
 ```
+
+A model has either `provider` (and `upstream_model`, the model's own name by default) or `targets`, each a
+`provider`, an `upstream_model` and a `weight` from 0 to 1000 (default 1; 0 is a standby); `aliases`; and
+`max_attempts` (default: the number of targets). At the top level, `retry_budget` (`ratio` 0.2, `min_per_second` 1;
+`{"ratio": 0, "min_per_second": 0}` turns fallback off) and `circuit_breaker` (`failures` 5, `cooldown` "10s";
+`failures` 0 turns breakers off).
 
 Other settings: `max_request_bytes` (default 4 MiB), `max_response_bytes` (16 MiB; both at most 1 GiB),
 `drain_delay` (default 0: how long a stopping gateway keeps serving with `/readyz` at 503), `allowed_hosts` (default
@@ -217,22 +275,28 @@ names it, not a silent default.
 `mockprovider` answers like OpenAI's API with a sentence that names the provider and model and quotes the last
 user message, padded to `-completion-tokens` words (it counts a word as a token). Its latency is `-ttft` plus
 `-per-token` for each word, scaled by `-jitter`. It fails a fraction `-error-rate` of requests with
-`-error-status`, and never answers a fraction `-hang-rate`. Every fate comes from a PCG seeded with `-seed`, four
-draws per request whatever the outcome, so a run is reproducible, and a higher error or hang rate only turns answers
-into failures or hangs.
+`-error-status`, never answers a fraction `-hang-rate`, and breaks a fraction `-cut-rate` of answers off part-way
+(day 2). With `"stream": true` it streams OpenAI's chunks, a token's time apart, then `data: [DONE]` (and the usage
+first, if `stream_options.include_usage` asks). Every fate comes from a PCG seeded with `-seed`, four draws per
+request whatever the outcome, so a run is reproducible, and a higher error, hang or cut rate only turns answers into
+failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (85 test and fuzz functions, about 6 s);
+`make check` runs gofmt, `go vet` and `go test -race` over every package (131 test and fuzz functions, about 7 s);
 CI runs the same on Ubuntu 24.04, then `make demo`'s script with the SDK checks as a second job.
 
 | Package | What the tests pin down |
 |---|---|
 | `jsonstrict` | members in order and byte for byte; repeated keys at any depth (also after unescaping); invalid UTF-8; anything but one object; the depth limit; a fuzz test that every accepted body rebuilds to itself |
 | `openai` | the acted-on fields and every way they can be wrong; keys equal to them only when case is ignored (including `ſ` for `s`), at the top level, in messages and in parts; the rewrite leaves every other byte alone; a fuzz test that a Go provider reads the forwarded body as the gateway did; the error envelope |
-| `config` | the checked-in configs load; defaults; 59 kinds of mistake, each refused with its name; no key, nothing of a `base_url`, and no `api_key_env` that may be a pasted key, in any error |
-| `mock` | exact answers and usage; `max_tokens` and `n`; validation; the key; latency lower bounds; jitter bounds; the same seed gives the same run, and a higher error or hang rate only adds failures or hangs; `Close` drops held and later requests; an unreadable body is a 400 |
+| `config` | the checked-in configs load; defaults (day 2's field by field); 89 kinds of mistake, each refused with its name (30 of them day 2's: targets, weights, aliases, `max_attempts`, the budget, the breaker); no key, nothing of a `base_url`, and no `api_key_env` that may be a pasted key, in any error |
+| `route` | every point of a 3/1/2 weight layout picks its target, standbys last; 40,000 seeded draws put a 3:1 model's heavier target first within 5 standard deviations of 3/4 |
+| `budget` | on a hand-moved clock: the ratio, the floor, expiry at exactly 10 s, a slot that comes round again, a slot nothing reuses, a clock stepped back, 0 and 0 turning fallback off, 8 goroutines allowing exactly 800 retries for 8,000 requests at 0.1 |
+| `breaker` | failures in a row (a success resets them); the cooldown; one probe at a time, its success, failure and hand-back; results counting only in their generation (late successes and failures from before a change); a ticket reporting once; 16 goroutines opening it once |
+| `mock` | exact answers and usage; `max_tokens` and `n`; validation; the key; latency lower bounds; jitter bounds; the same seed gives the same run, and a higher error, hang or cut rate only adds failures, hangs or cuts; `Close` drops held and later requests; an unreadable body is a 400; a stream is the plain answer chunk by chunk (with `n` = 2), its pace, its usage chunk, a cut stream with no `[DONE]`, a cut answer shorter than its `Content-Length` |
 | `gateway` | a forward with only `model` rewritten and only the allowlisted headers; the `Host` allowlist (any spelling of an address, no `Host` at all, the health endpoints exempt, refusals logged); every refusal before forwarding, the request limit at exactly its boundary, a 408 for a slow body, a 503 for a body still arriving at the stop; every row of the mapping table with a misbehaving provider; the response limit at exactly its boundary; timeouts (no answer, a trickled body); unreachable and cut-off providers; a client that leaves or half-closes (never an empty 200); the shutdown 503; a forwarded request never resent; HTTP/2 to an https provider; the pool keeping its connections; the log line's facts and absences; 64 concurrent requests |
+| `gateway`, day 2 | 19 kinds of failure, each falling back with its outcome or not falling back; the unanswered rule (a timeout skips the same provider's other target; a 500 doesn't); the last answer and only its headers; `max_attempts`; the budget off and at 0.5; open breakers skipped, then 503 with `Retry-After`; a 404 not tripping one; a probe the budget refuses handed back; weights; a client leaving or the stop ending the fallback; a stream byte for byte against the mock's own and flushed per event; 8 ways a stream fails before its first event, each falling back; errors before it mapped as usual (never an empty 200); the error event after it (a cut, a stall, the stop); the timeout between events; a slow client not taken for the provider's timeout; a client leaving mid-stream; the event reader's cases, and a fuzz test against a whole-input reference |
 | `cmd/...` | serving, readiness and a clean stop; the drain (`/readyz` 503 while still answering); a request finishing within the grace; one still running after it getting a 503; a second signal ending the real binary at once; the server's timeouts; usage errors and exit codes |
 
 Mutation checks, run by hand: 46 mechanisms removed or broken one at a time, and each made a test fail: 26 in the
@@ -243,6 +307,10 @@ configuration's errors and host rules, 3 in parsing and the case rules, 6 in the
 signal channel's buffer of 2 rather than 1, a defence for an interleaving no test can force. Two more didn't count:
 one didn't build, and reading one byte more than the response limit changes nothing (the size check still catches
 it). The commit messages list them; the three reviews found the gaps in the first counts.
+
+Day 2's mutation checks (`9e6cff7`'s message lists them): 18 mechanisms of the fallback, the router, the budget and
+the breaker broken one at a time; 16 failed a test at once. The budget's expiry survived (only a reused slot was
+tested) and is caught now; a "stop" flag for the shutdown survived because it was redundant, and was removed.
 
 ## Design decisions
 
@@ -271,13 +339,29 @@ it). The commit messages list them; the three reviews found the gaps in the firs
   server's base context with a shutdown cause, which cancels their provider requests and lets each answer 503.
   `http.Server.Shutdown` alone returns at its deadline with handlers still running. A second Ctrl-C ends it at once
   (two identical signals sent back to back by a program can merge into one; DESIGN.md says why).
-- **No dependencies.** The standard library covers day 1; Redis and Prometheus come with days 3 and 4.
+- **No dependencies.** The standard library covers days 1 and 2; Redis and Prometheus come with days 3 and 4.
+- **Three outcomes, because a retry can cost money.** An error answer says the provider didn't do the work, so any
+  target may be next; a timeout or a cut-off answer doesn't say that, so the provider that may have done it isn't
+  sent the request again. "Retryable or not" alone can't express that.
+- **A retry budget, not just a retry count.** Fallback absorbs a provider's occasional failures; while one is down,
+  the budget stops fallback from multiplying the load on the rest (a retry storm).
+- **A breaker per provider, with generations.** An outage or a revoked key is the provider's, whichever model is
+  asked; a 404 (one unknown upstream model) isn't counted. A result counts only in the state its attempt was
+  allowed in, so slow requests from before a change can't reopen or close the breaker.
+- **A stream commits on its first event.** Until then the gateway has written nothing and can still fall back;
+  after it, the status is out, so a break becomes an error event (which SDKs raise) and a dropped connection (so no
+  client takes it for a complete answer), never a 502.
 
-## Limitations (day 1)
+## Limitations (day 2)
 
-- One provider per model: no fallback, retries or circuit breakers yet (day 2).
-- No streaming: `stream: true` is refused (day 2).
 - No client authentication, rate limits, caching or cost accounting (day 3); no metrics (day 4).
+- The retry budget and the breakers live in one gateway process: replicas don't share them.
+- No deadline across attempts: a request can wait up to `max_attempts` provider timeouts before its last answer
+  (the client's own timeout bounds it; leaving cancels everything).
+- A target is never retried within a request, even after a 429 with a short `Retry-After`; the client's SDK retries.
+- After a stream's first event there is no fallback: the client gets an error event, not another provider's answer.
+- A lone `\r` as an SSE line ending isn't recognised (OpenAI and the compatible servers use `\n`).
+- Where the mock cuts an answer depends on the cut rate (the cut and its position share one draw).
 - `/v1/chat/completions` only: no embeddings, legacy completions, files or assistants.
 - The mock counts words, not tokens.
 - A request arriving while the gateway stops can be reset rather than answered: a connection still waiting in the
