@@ -9,6 +9,15 @@ README.md first; DESIGN.md has the full reasoning. Each day adds a section.
 `WithModel`); `cmd/switchboard/main.go` (`main`, `serve`); `internal/mock/mock.go` (`draw`, `chatCompletions`).
 Then the tests named below, and the `review_*_test.go` files, each of which starts with the bug it found.
 
+**Reading order for day 2:** DESIGN.md "Routing", "Fallback", "The retry budget", "Circuit breakers" and
+"Streaming"; `internal/gateway/gateway.go` (`chat`'s loop, the `outcome` and `health` types, `try`, `unreached`);
+`internal/gateway/stream.go` (`relay`, `endStream`, `eventReader.next`); `internal/breaker/breaker.go` (`Allow`,
+`report`); `internal/budget/budget.go` (`Retry`, `totals`); `internal/route/route.go`; `internal/mock/mock.go`
+(`draw`, `stream`). Then `TestEachKindOfFailureFallsBackOrNot`, `TestAnUnansweredProviderIsNotAskedAgainButAFailedOneIs`,
+`TestAProbeTheBudgetRefusesIsHandedBack`, `TestAResultCountsOnlyInTheStateItsAttemptWasAllowedIn`,
+`TestAStreamFallsBackUntilItsFirstEvent`, `TestAStreamThatBreaksAfterItsFirstEventEndsWithAnErrorEvent` and
+`TestASlowClientIsNotTheProvidersTimeout`.
+
 ## The project (day 1)
 
 **What is Switchboard, in a minute?**
@@ -25,9 +34,10 @@ the hop.
 
 **Walk me through a request.**
 `gateway.chat`: check the content type (415), read the body up to the limit (413), parse it strictly (400), check
-the fields the gateway acts on (400), refuse `stream` until day 2, look up the model (404). Then `forward`: rewrite
+the fields the gateway acts on (400), look up the model (404). Then (day 1's `forward`, day 2's `try`): rewrite
 `model` to the provider's name, send it with an allowlist of headers and the provider's key under the provider's
-timeout, read the answer up to its limit, and map it by the table. One JSON log line per request.
+timeout, read the answer up to its limit, and map it by the table. From day 2 that last part runs once per target
+until one answers (below). One JSON log line per request.
 
 ## Reading requests safely
 
@@ -237,3 +247,124 @@ listener closes. The test now waits for the handler itself, and README "Limitati
 moment of a stop can be reset. Second, the role differential above. Third, one mutant my script counted as caught had
 no failing test: it didn't compile, and a build failure fails `go test` too. Re-run as a mutant that compiles, the
 tests caught it; the script now checks that a mutant builds before running the tests.
+
+## Routing and fallback (day 2)
+
+**How does the gateway pick a provider?**
+A model has targets, each a provider, its name for the model and a weight (`config.Target`). `route.Order` picks the
+first at random in proportion to the weights, each next in proportion to the weights left, and puts weight-0
+standbys last, so `[{a, 3}, {b, 1}]` goes to `a` three times in four and falls back to `b`. The randomness comes in as
+an `IntN` function, so `TestEveryPointOfTheWeightsPicksItsTarget` can say where each draw lands, and 40,000 seeded
+draws check the proportions.
+
+**When does it fall back, and when not?**
+Every attempt ends in one of three outcomes (`outcome` in gateway.go). *Answered*: a completion or an answer about
+the request (400, 413, 422) goes to the client; another provider would refuse the same bad request. *Failed*: the
+provider said it didn't do the work (429, 5xx, 401/403, 404, a redirect), or never got the whole request; any target
+may be next. *Unanswered*: it got the request and gave nothing usable (a timeout, a cut-off answer, a 200 that isn't
+JSON); other providers may be tried, this one isn't asked again. `TestEachKindOfFailureFallsBackOrNot` has 19 rows.
+
+**Why the difference between failed and unanswered?**
+Money. An error answer is the provider saying it didn't do it. A timeout isn't proof of anything: the provider may
+have generated the whole answer and billed it, and may still be working. Sending it the request again could pay
+twice for one answer; sending it to another provider pays at most once more, which is what you buy fallback for.
+`TestAnUnansweredProviderIsNotAskedAgainButAFailedOneIs` gives one provider two upstream models: after a timeout the
+second is skipped (`unanswered_before` in the log); after a 500 it's tried.
+
+**How do you know whether the provider got the whole request?**
+`httptrace.ClientTrace.WroteRequest`, which net/http calls once the request and its body are written. If it never
+reported success (the dial was refused, DNS failed, the write broke), the provider can't have a complete JSON body
+to act on, so the failure is *failed*, not *unanswered*. The "nothing listening" row tests that side.
+
+**Why never retry the same target?**
+The client's SDK already retries (the OpenAI SDK twice, with backoff), and a gateway retrying the same target too
+would multiply the attempts: 3 × 3 = 9 upstream calls for one user request. The gateway's value is the other targets.
+
+**What does the client see when everything fails?**
+The last attempt's answer, mapped by day 1's table, with only that answer's headers: a first attempt's 429 must not
+leave its `Retry-After` on a later 502 (`TestWhenEveryTargetFailsTheClientGetsTheLastAnswer`). The response says
+which provider answered and how many targets were tried (`X-Switchboard-Provider`, `X-Switchboard-Attempts`), and
+the log line lists each attempt and each skipped target with its reason.
+
+## Retry budget and circuit breakers (day 2)
+
+**What's a retry storm, and what does the budget do about it?**
+When a provider fails, every request falls back to the others, just when they are busiest; with a fixed retry
+count, an outage of one provider adds its whole traffic as retries on the rest. `budget.Budget` caps retries at a
+share of requests: in any 10 seconds at most `ratio` (0.2) per request received, plus `min_per_second` (1) so a quiet
+gateway can still fall back. Past that, the client gets the failure at once. `TestMaxAttemptsAndTheRetryBudgetLimitFallback`
+shows a ratio of 0.5 letting exactly every second request fall back.
+
+**Why a window of slots and not a token bucket?**
+"20% of requests over the last 10 seconds" is the policy itself, and the window says it directly: ten one-second
+slots of (requests, retries), each cleared when its second comes round again. A token bucket would need a capacity,
+a second knob for how big a burst of retries after a quiet spell may be. Finagle's `RetryBudget` makes the same
+choice of ratio plus floor.
+
+**Walk me through the breaker.**
+Closed: count failures in a row; 5 open it. Open: refuse for the 10 s cooldown; the gateway skips the provider
+without an attempt. Half-open: let one request through as a probe; its success closes the breaker, its failure opens
+it for another cooldown. If every target is skipped, the client gets 503 `circuit_open` with `Retry-After` until the
+earliest probe, at once, instead of waiting on a provider known to be failing.
+
+**What are the generations for?**
+A request allowed while the breaker was closed can take its whole timeout to fail. Without generations it would
+then count against a breaker that has since opened (restarting the cooldown) or, if it succeeded during a probe,
+close the breaker on old evidence. Every change of state starts a generation, a ticket remembers its own, and a
+result from an older one is ignored (`TestAResultCountsOnlyInTheStateItsAttemptWasAllowedIn`). gobreaker does the same.
+
+**What's the easiest bug to write in a half-open breaker?**
+A probe that's never reported: the breaker stays "probing" for ever and every request skips the provider. Here the
+budget refusing a retry after the breaker had allowed the probe was that path; the ticket is handed back, and
+`TestAProbeTheBudgetRefusesIsHandedBack` fails if that line is removed. A ticket reports once, so a deferred hand-back
+after a real report is harmless.
+
+**Why doesn't a 404 trip the breaker, while a 429 does?**
+A 404 is about one upstream model (a typo in the config), not the provider: the provider's other models may be fine,
+and opening its breaker would take them down too (`TestA404DoesNotTripTheProvidersBreaker`). A 429 means the provider
+is rate-limiting the gateway's key; sending it every request only collects more 429s, so skipping it for a cooldown
+is right.
+
+## Streaming (day 2)
+
+**How do you stream through a gateway that also falls back?**
+The status of a stream is out with its first byte, so fallback is only possible before it. The gateway reads the
+provider's first data event before writing anything (`relay`): a failure until then is an outcome like any other,
+and the request falls back (`TestAStreamFallsBackUntilItsFirstEvent` has eight ways to fail first). The first event
+commits: 200, the headers and that event, then every event as it arrives, byte for byte, each flushed.
+
+**What happens when a stream breaks halfway?**
+It can't become a 502: the client already has a 200 and part of an answer. The gateway writes one last event in
+OpenAI's error shape (`endStream`), which the OpenAI SDK raises as an `APIError` (the demo checks this with the real
+SDK), and then drops the connection with `http.ErrAbortHandler`, so even a client that ignores the event sees a broken
+transfer (curl exits 18) rather than a stream that ended as if complete. A stream that ends cleanly ends with
+`data: [DONE]`; one that ends without it counts as broken.
+
+**How do you know events are flushed one at a time, not buffered?**
+`TestAStreamIsRelayedEventByEventAsItArrives`: the mock writes 32 words 20 ms apart; through the gateway the events
+must arrive spread over more than 500 ms, and match the mock's own stream byte for byte.
+
+**What does the provider's timeout mean for a stream?**
+The longest wait for its next sign of progress: the first event, then each next one. A whole-answer timeout would cut
+long answers; none would let a stalled provider hold a connection for ever. It's a `time.AfterFunc` that cancels the
+attempt's context with its own cause (`errProviderTimeout`), so a timeout is told apart from a client leaving.
+
+**Tell me about a bug you found in your own streaming code.**
+The progress timer kept running while the gateway was blocked writing to the client. A client that paused longer
+than the timeout got a healthy stream cut as `upstream_timeout`, and the provider's breaker counted the failure: in
+the test, 8 MB streamed at once, a client that read one event and then nothing for 600 ms, a 200 ms timeout, and the
+stream died after 1.3 MB with the breaker open. I found it writing DESIGN.md's paragraph on backpressure, reproduced
+it, and fixed it by stopping the timer around each write (`TestASlowClientIsNotTheProvidersTimeout`).
+
+**And one a fuzzer found?**
+`FuzzEventReaderAgreesWithTheReference` compares the streaming event reader (a 16-byte buffer, input arriving a byte
+at a time) with a splitter that has the whole input in memory. Its first run found that `data: ` with an empty value
+came back as an event with no data, because `bytes.Join` of one empty slice returns nil; by the SSE spec it's an
+event whose data is the empty string. After the fix it ran 5.4 million inputs in a minute without a difference.
+
+**How did you make the mock stream, and fail mid-stream, deterministically?**
+It writes OpenAI's chunks a token's time apart and `data: [DONE]` (`mock.stream`). `-cut-rate` breaks answers off;
+the decision uses the fourth random draw that day 1 reserved, so every request still takes four draws, the failures
+don't move when the cut rate changes, and a higher cut rate only turns answers into cuts
+(`TestARaisedCutRateOnlyAddsCuts`).
+
