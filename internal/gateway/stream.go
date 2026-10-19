@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/vivekdavara/switchboard/internal/config"
 	"github.com/vivekdavara/switchboard/internal/openai"
@@ -113,8 +114,13 @@ func eventStream(contentType string) bool {
 // relay reads a streaming provider's answer and, once its first data event is in, writes the whole stream to the
 // client. Until then it writes nothing and returns a result like any attempt's; once it has written, its result says
 // so (written), and the stream has ended one way or the other.
+//
+// timer is the attempt's timeout, running since the request was sent. It runs only while the gateway waits for the
+// provider: it is stopped while an event is written to the client and started again for the next, so a client that
+// reads slowly (blocking the writes) isn't taken for a provider making no progress. (Before this, a client that paused
+// for longer than the timeout got a healthy stream cut as upstream_timeout, and the provider's breaker counted it.)
 func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx context.Context, p *config.Provider,
-	attempt int, progress func(), resp *http.Response) result {
+	attempt int, timer *time.Timer, resp *http.Response) result {
 	defer resp.Body.Close()
 	events := newEventReader(resp.Body, g.cfg.MaxResponseBytes)
 	var first sseEvent
@@ -145,6 +151,7 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 	}
 
 	// The first event commits the response.
+	timer.Stop()
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
@@ -168,9 +175,11 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 	}
 	x.events = 1
 	for ev := first; !ev.done(); {
-		progress()
+		timer.Reset(p.Timeout)
 		var err error
-		if ev, err = events.next(); err != nil {
+		ev, err = events.next()
+		timer.Stop()
+		if err != nil {
 			return g.endStream(w, r, x, ctx, p, err)
 		}
 		if !send(ev.raw) {

@@ -399,3 +399,43 @@ func TestTheEventReader(t *testing.T) {
 		t.Fatal("chunk must end an event")
 	}
 }
+
+func TestASlowClientIsNotTheProvidersTimeout(t *testing.T) {
+	// The provider streams 8 MB at once; the client takes the first event, then reads nothing for longer than the
+	// provider's timeout, so the gateway's writes block. The timeout is the provider's: waiting on the client isn't
+	// the provider making no progress, and mustn't cut the stream or count against its breaker.
+	big := strings.Repeat("y", 4000)
+	var events []string
+	for range 2000 {
+		events = append(events, "data: "+big+"\n\n")
+	}
+	events = append(events, "data: [DONE]\n\n")
+	up := newProvider(t, streaming(events, 0, false))
+	srv, g, logs := gatewayFor(t, `"max_response_bytes":67108864,"circuit_breaker":{"failures":1}`,
+		[]string{at(up, `"timeout":"200ms"`)}, "m=p0/x")
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/chat/completions", strings.NewReader(askStream))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	r := bufio.NewReader(resp.Body)
+	if line, _ := r.ReadString('\n'); !strings.HasPrefix(line, "data: y") {
+		t.Fatalf("first line %.40q", line)
+	}
+	time.Sleep(600 * time.Millisecond)
+	rest, err := io.ReadAll(r)
+	if err != nil || !bytes.HasSuffix(rest, []byte("data: [DONE]\n\n")) || bytes.Contains(rest, []byte(`"error"`)) {
+		t.Errorf("after a pause, the rest (%d bytes) ended with %q, %v", len(rest), rest[max(0, len(rest)-120):], err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(logs.String(), `"msg":"chat completion"`); {
+		if time.Now().After(deadline) {
+			t.Fatal("no log line")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if x := lastExchange(t, logs); x.Code != "" || g.breakers["p0"].State().String() != "closed" {
+		t.Errorf("%+v, breaker %s", x, g.breakers["p0"].State())
+	}
+}

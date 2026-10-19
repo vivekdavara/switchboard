@@ -428,7 +428,6 @@ func (g *Gateway) try(w http.ResponseWriter, r *http.Request, x *exchange, t con
 	defer cancel(nil)
 	timer := time.AfterFunc(p.Timeout, func() { cancel(errProviderTimeout) })
 	defer timer.Stop()
-	progress := func() { timer.Reset(p.Timeout) }
 	// Whether the provider got the whole request decides whether a failure may have cost it work: one that never
 	// did can't have started (DESIGN.md, "Fallback").
 	var delivered atomic.Bool
@@ -464,7 +463,7 @@ func (g *Gateway) try(w http.ResponseWriter, r *http.Request, x *exchange, t con
 	}
 	x.upstreamStatus = resp.StatusCode
 	if stream && resp.StatusCode == http.StatusOK && eventStream(resp.Header.Get("Content-Type")) {
-		return g.relay(w, r, x, ctx, p, attempt, progress, resp)
+		return g.relay(w, r, x, ctx, p, attempt, timer, resp)
 	}
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, g.cfg.MaxResponseBytes+1))
 	resp.Body.Close()
