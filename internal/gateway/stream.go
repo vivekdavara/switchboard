@@ -199,13 +199,23 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 		}
 	}
 	x.events = 1
+	// Only a data event is progress: the time spent waiting through comments (pings) is kept, so a provider that
+	// sends pings and nothing else still times out (before, a ping restarted the whole timeout; a suspicion of the
+	// day-2 review).
+	remaining := p.Timeout
 	for ev := first; !ev.done(); {
-		timer.Reset(p.Timeout)
+		timer.Reset(remaining)
+		waited := time.Now()
 		var err error
 		ev, err = events.next()
 		timer.Stop()
 		if err != nil {
 			return g.endStream(w, r, x, ctx, p, err)
+		}
+		if ev.data != nil {
+			remaining = p.Timeout
+		} else {
+			remaining -= time.Since(waited)
 		}
 		if !send(ev.raw) {
 			return result{written: true, gone: true, cause: errClientWrite}

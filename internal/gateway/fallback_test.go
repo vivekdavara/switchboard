@@ -87,8 +87,10 @@ func TestEachKindOfFailureFallsBackOrNot(t *testing.T) {
 		status   int    // what the client gets, when it doesn't
 	}{
 		{"500", answering(500, `{"error":{"message":"oops","type":"server_error"}}`), true, "failed", 0},
-		{"502 without JSON", answering(502, "bad gateway"), true, "failed", 0},
+		{"502 without JSON", answering(502, "bad gateway"), true, "unanswered", 0},
 		{"503", answering(503, `{}`), true, "failed", 0},
+		{"504", answering(504, `{}`), true, "unanswered", 0},
+		{"524, Cloudflare's timeout", answering(524, `{}`), true, "unanswered", 0},
 		{"529, overloaded", answering(529, `{}`), true, "failed", 0},
 		{"429", answering(429, `{"error":{"message":"slow down","type":"rate_limit_error"}}`, "Retry-After", "7"),
 			true, "failed", 0},
@@ -410,5 +412,50 @@ func TestAProbeTheBudgetRefusesIsHandedBack(t *testing.T) {
 	resp, b := send(t, srv, `{"model":"only","messages":[{"role":"user","content":"x"}]}`)
 	if _, code, _, _ := errorOf(t, b); resp.StatusCode != 502 || code != "upstream_error" || len(flaky.requests()) != 2 {
 		t.Errorf("%d %s; p1 got %d requests", resp.StatusCode, b, len(flaky.requests()))
+	}
+}
+
+func TestAStopBetweenAttemptsEndsTheFallbackAtOnce(t *testing.T) {
+	base, stop := context.WithCancelCause(context.Background())
+	// p0 sees the request, the stop begins, and p0 fails it: the fallback mustn't spend the budget on an attempt
+	// that can't leave the gateway.
+	p0 := newProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stop(ErrShutdown)
+		answering(500, `{}`).ServeHTTP(w, r)
+	}))
+	p1 := newProvider(t, mockProvider(t, "mock-b"))
+	_, g, logs := gatewayFor(t, "", []string{at(p0, ""), at(p1, "")}, inOrder("fast", "p0/x", "p1/mock-small"))
+	srv := httptest.NewUnstartedServer(g)
+	srv.Config.BaseContext = func(net.Listener) context.Context { return base }
+	srv.Start()
+	defer srv.Close()
+	resp, b := send(t, srv, ask)
+	if _, code, _, _ := errorOf(t, b); resp.StatusCode != 503 || code != "shutting_down" || len(p1.requests()) != 0 {
+		t.Errorf("%d %s; p1 got %d", resp.StatusCode, b, len(p1.requests()))
+	}
+	if x := lastExchange(t, logs); x.Attempts != 1 {
+		t.Errorf("%+v", x)
+	}
+}
+
+func TestARequestThatMakesNoAttemptDoesNotFillTheBudget(t *testing.T) {
+	// p0's breaker opens on one failure; ten requests then get circuit_open without an attempt. At a ratio of 0.3
+	// with no floor, only the two requests that made attempts count, so the next one's retry is refused (counting
+	// the ten would have allowed it).
+	p0 := newProvider(t, answering(500, `{}`))
+	p1 := newProvider(t, answering(500, `{}`))
+	p2 := newProvider(t, mockProvider(t, "mock-c"))
+	srv, _, logs := gatewayFor(t, `"retry_budget":{"ratio":0.3,"min_per_second":0},`+
+		`"circuit_breaker":{"failures":1,"cooldown":"1m"}`, []string{at(p0, ""), at(p1, ""), at(p2, "")},
+		"dead=p0/x", inOrder("m", "p1/x", "p2/mock-small"))
+	for range 11 {
+		send(t, srv, `{"model":"dead","messages":[{"role":"user","content":"x"}]}`)
+	}
+	if n := len(p0.requests()); n != 1 {
+		t.Fatalf("p0 got %d requests", n)
+	}
+	resp, b := send(t, srv, `{"model":"m","messages":[{"role":"user","content":"x"}]}`)
+	if x := lastExchange(t, logs); resp.StatusCode != 502 || !x.Spent || len(p2.requests()) != 0 {
+		t.Errorf("%d %s %+v", resp.StatusCode, b, x)
 	}
 }

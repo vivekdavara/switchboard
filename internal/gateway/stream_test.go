@@ -553,3 +553,40 @@ func TestAFirstEventThatIsNotAChunkFallsBack(t *testing.T) {
 		})
 	}
 }
+
+func TestPingsAfterTheFirstEventAreNotProgress(t *testing.T) {
+	// One chunk, then a ping every 50 ms for ever: the client gets the pings, and the stream still times out, a
+	// timeout after the chunk, not after the last ping.
+	up := newProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, chunk)
+		rc := http.NewResponseController(w)
+		rc.Flush()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+				io.WriteString(w, ": ping\n\n")
+				rc.Flush()
+			}
+		}
+	}))
+	srv, _, logs := gatewayFor(t, "", []string{at(up, `"timeout":"300ms"`)}, "m=p0/x")
+	began := time.Now()
+	resp, events, err := readStream(t, srv, askStream)
+	took := time.Since(began)
+	if resp.StatusCode != 200 || err == nil || len(events) < 3 || !strings.HasPrefix(events[1].raw, ": ping") {
+		t.Fatalf("%d, %d events, %v", resp.StatusCode, len(events), err)
+	}
+	if code := lastEventError(t, events); code != "upstream_timeout" {
+		t.Errorf("code %q", code)
+	}
+	if took > 3*time.Second {
+		t.Errorf("pings kept the stream open for %s", took)
+	}
+	// A broken stream went out as a 200; its log line is a warning all the same.
+	if !strings.Contains(logs.String(), `"level":"WARN","msg":"chat completion"`) {
+		t.Errorf("log: %s", logs)
+	}
+}

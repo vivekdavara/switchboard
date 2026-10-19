@@ -41,7 +41,8 @@ func New(c config.RetryBudget, now func() time.Time) *Budget {
 	return &Budget{ratio: c.Ratio, floor: c.MinPerSecond * Window.Seconds(), now: now}
 }
 
-// Request records a request's first attempt, which is never refused.
+// Request records a request's first attempt, which is never refused. A request that makes no attempt (every
+// target's breaker open) isn't counted: it adds no load.
 func (b *Budget) Request() {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -38,6 +38,9 @@ var ErrShutdown = errors.New("the gateway is shutting down")
 // StatusClientClosed is what the log says when the client went away before its answer: nginx's 499.
 const StatusClientClosed = 499
 
+// statusTimeoutCDN is Cloudflare's 524, "a timeout occurred": its edge waited too long for the provider's server.
+const statusTimeoutCDN = 524
+
 // errProviderTimeout is the cause an attempt's context is cancelled with when the provider makes no progress for its
 // timeout.
 var errProviderTimeout = errors.New("the provider's timeout passed with no progress")
@@ -269,12 +272,23 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6 to 8, once per target until one answers: rewrite, forward, answer. DESIGN.md, "Fallback".
-	g.budget.Request()
 	var last *result
 	var probeAt time.Time       // the earliest an open breaker skipped here lets a probe through
 	unsure := map[string]bool{} // providers that may still be working on an earlier attempt
 	for _, t := range route.Order(model.Targets, g.intn) {
 		if len(x.attempts) == model.MaxAttempts {
+			break
+		}
+		if len(x.attempts) > 0 && r.Context().Err() != nil {
+			// The client left, or the gateway began to stop, after the last attempt: another would never leave the
+			// gateway, but would still spend the retry budget and maybe a breaker's probe (a suspicion of the day-2
+			// review).
+			res := g.unreached(r, r.Context(), t.Provider, context.Cause(r.Context()), false)
+			if res.gone {
+				x.status, x.err = StatusClientClosed, res.cause
+				panic(http.ErrAbortHandler)
+			}
+			last = &res
 			break
 		}
 		if unsure[t.Provider.Name] {
@@ -289,7 +303,9 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		if len(x.attempts) > 0 && !g.budget.Retry() {
+		if len(x.attempts) == 0 {
+			g.budget.Request() // only a request that makes an attempt adds load the budget is a share of
+		} else if !g.budget.Retry() {
 			ticket.Release()
 			x.budgetSpent = true
 			break
@@ -516,6 +532,12 @@ func (g *Gateway) try(w http.ResponseWriter, r *http.Request, x *exchange, t con
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return result{kind: failed, health: unhealthy, err: upstreamError(http.StatusBadGateway, "upstream_auth",
 			"the provider %s refused the gateway's credentials (%d)", p.Name, status)}
+	case status == http.StatusBadGateway || status == http.StatusGatewayTimeout || status == statusTimeoutCDN:
+		// The provider's own front end lost its back end: a broken answer from it, or a timeout waiting on it (524
+		// is Cloudflare's). That back end may have done the work, so this is as unanswered as a timeout of ours
+		// (a suspicion of the day-2 review: as "failed", the same provider could be sent the request again).
+		return result{kind: unanswered, health: unhealthy, err: upstreamError(http.StatusBadGateway,
+			"upstream_error", "the provider %s answered %d", p.Name, status)}
 	case status == http.StatusNotFound:
 		// About this target (the provider doesn't know its upstream model, or the base URL is wrong), not about
 		// the provider's health: its other models may be fine, so its breaker isn't told.
@@ -609,7 +631,7 @@ func (g *Gateway) logExchange(x *exchange) {
 		attrs = append(attrs, slog.String("err", x.err.Error()))
 	}
 	level := slog.LevelInfo
-	if x.status >= 500 {
+	if x.status >= 500 || (x.streamed && x.code != "") { // a stream that broke went out as a 200
 		level = slog.LevelWarn
 	}
 	g.log.LogAttrs(context.Background(), level, "chat completion", attrs...)

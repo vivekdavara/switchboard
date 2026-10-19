@@ -104,8 +104,10 @@ type Model struct {
 	Name    string
 	Aliases []string
 	Targets []Target
-	// MaxAttempts is how many targets one request may try, the first included; 1 means no fallback. It is at most
-	// len(Targets): a request never tries one target twice (a client's SDK retries on its own, with backoff).
+	// MaxAttempts is how many attempts one request may make, the first included; 1 means no retries. A target
+	// skipped because its breaker is open isn't an attempt, so with 1 the next target is still tried in its place.
+	// It is at most len(Targets): a request never tries one target twice (a client's SDK retries on its own, with
+	// backoff).
 	MaxAttempts int
 }
 
