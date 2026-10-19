@@ -71,7 +71,7 @@ type Config struct {
 }
 
 // RetryBudget bounds the attempts the gateway makes after a request's first, across all requests: in any 10 seconds
-// it makes at most Ratio of them per request received, plus MinPerSecond of them a second. When a provider fails,
+// it makes at most Ratio of them per request that made an attempt, plus MinPerSecond of them a second. When a provider fails,
 // fallback adds load to the others just when they are busiest; the budget caps that extra load. Ratio 0 and
 // MinPerSecond 0 turn fallback off.
 type RetryBudget struct {

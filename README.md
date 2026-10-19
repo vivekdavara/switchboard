@@ -159,9 +159,10 @@ What the client gets for each provider outcome:
 | can't be reached, or breaks off | 502 `upstream_unavailable` |
 | is slower than its `timeout` | 504 `upstream_timeout` |
 
-If the client goes away, the provider's request is cancelled too. Each response carries `X-Request-Id` (also on
-the request to the provider and in the log line), `X-Switchboard-Provider` (whose answer it is) and
-`X-Switchboard-Attempts`.
+If the client goes away, the provider's request is cancelled too. Each chat completion's response carries
+`X-Request-Id` (also on the request to the provider and in the log line); once the model is known, also
+`X-Switchboard-Attempts`, and `X-Switchboard-Provider` (whose answer it is) when a provider answered (not on a
+refusal before routing, nor on the `circuit_open` 503).
 
 **Fallback (day 2).** The table is what one attempt gives. A request tries the model's targets in weighted order
 (standbys of weight 0 last), at most `max_attempts` of them, each target once, and each attempt ends in one of three
@@ -183,7 +184,8 @@ object, not `[DONE]`), so a stream that fails before it falls back like any requ
 one at a time. A stream that breaks after that (ended before `data: [DONE]`, no progress for the provider's timeout,
 too large, the gateway stopping) gets one last event in OpenAI's error shape, which the OpenAI SDK raises as an
 `APIError`, and the connection is dropped. The provider's `timeout` is the longest wait for its next sign of
-progress: the whole answer, or a stream's next event.
+progress: the whole answer, or a stream's next data event (pings don't count, and the time the gateway spends
+writing to a slow client doesn't either).
 
 ## Results (day 1)
 

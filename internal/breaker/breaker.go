@@ -6,7 +6,8 @@
 // until Cooldown has passed; then the breaker is half-open. Half-open: one attempt at a time is let through as a
 // probe; its success closes the breaker, its failure opens it for another Cooldown. A result counts only in the
 // state its attempt was allowed in: an attempt allowed while closed that fails after the breaker opened can't open it
-// again, and one that succeeds can't close it.
+// again, and one that succeeds can't close it. The one exception is a probe that reported its success early
+// (Ticket.Answered, a stream's first event) and then failed: that failure is counted in the state it arrives in.
 package breaker
 
 import (

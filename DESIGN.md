@@ -215,7 +215,8 @@ stream after its first chunk never tripped its breaker (found in the second revi
 makes 21 kinds of answer a probe and checks the verdict of each.
 
 **Generations.** Every change of state starts a new generation, and a result counts only in the generation its
-attempt was allowed in. Without that, a slow request allowed while the breaker was closed, failing after it opened,
+attempt was allowed in (with one exception, above: a streamed probe's failure after its early success is counted in
+the state it arrives in). Without that, a slow request allowed while the breaker was closed, failing after it opened,
 would restart the cooldown, and one succeeding during a probe would close the breaker on old evidence (both tested).
 A ticket reports once, so a deferred hand-back after a real report is harmless, and every path that takes a ticket
 reports it: the budget refusing a retry hands the probe back (a test fails without that hand-back: the provider would
@@ -259,7 +260,8 @@ blank line; a lone `\r` as a line ending (allowed by the SSE spec, sent by no pr
 - Upstream: each provider has a `timeout` (default 60 s): the longest the gateway waits for the provider's next sign
   of progress. For a plain request that is the whole answer (connecting, sending, the provider's thinking and reading
   it all); a model that writes 4,000 tokens at 50 a second needs 80 s, so the default is a choice per provider, not a
-  law. For a stream it is the first event, then each next one (day 2: a timer reset per event), so a long stream
+  law. For a stream it is the first event, then each next data event (day 2: a timer restarted per data event, and
+  stopped while the gateway writes to the client; pings don't restart it), so a long stream
   that keeps coming never times out and one that stalls does.
 - Shutdown on SIGINT or SIGTERM: `/readyz` turns 503 and, for `drain_delay` (default 0), the gateway keeps serving
   everything else, so a load balancer that polls `/readyz` stops sending before the port closes. (Without the delay

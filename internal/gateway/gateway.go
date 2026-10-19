@@ -440,7 +440,7 @@ func (g *Gateway) try(w http.ResponseWriter, r *http.Request, x *exchange, t con
 	}()
 
 	// The provider's timeout is the longest the gateway waits for its next sign of progress: the whole answer, or
-	// a stream's next event.
+	// a stream's next data event (relay stops the timer while it writes to the client, and pings don't restart it).
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
 	timer := time.AfterFunc(p.Timeout, func() { cancel(errProviderTimeout) })
