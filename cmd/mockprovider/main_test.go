@@ -134,6 +134,7 @@ func TestBadFlagsAreUsageErrors(t *testing.T) {
 		{"-nonsense"},
 		{"-ttft", "soon"},
 		{"-error-rate", "2"},
+		{"-cut-rate", "1.5"},
 		{"-jitter", "-1"},
 		{"-name", ""},
 		{"extra"},
@@ -157,5 +158,31 @@ func TestAMissingKeyOrABusyPortIsAnError(t *testing.T) {
 	defer func() { stop(); <-code }()
 	if got := run(context.Background(), []string{"-addr", srv.Addr}, env(nil), &syncBuffer{}, nil); got != 1 {
 		t.Errorf("busy port: exit %d", got)
+	}
+}
+
+func TestACutRateOfOneBreaksEveryAnswer(t *testing.T) {
+	logs := &syncBuffer{}
+	srv, stop, code := serve(t, []string{"-ttft", "0", "-per-token", "0", "-cut-rate", "1"}, env(nil), logs)
+	for _, body := range []string{`{"model":"mock-small","messages":[{"role":"user","content":"hi"}]}`,
+		`{"model":"mock-small","messages":[{"role":"user","content":"hi"}],"stream":true}`} {
+		resp, err := http.Post("http://"+srv.Addr+"/v1/chat/completions", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || err == nil {
+			t.Errorf("%s: %d, read error %v; want a 200 that breaks off", body, resp.StatusCode, err)
+		}
+	}
+	stop()
+	if got := <-code; got != 0 {
+		t.Errorf("exit %d", got)
+	}
+	for _, want := range []string{`"cut_rate":1`, `"cut":2`, `"answered":0`} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs lack %s:\n%s", want, logs)
+		}
 	}
 }

@@ -44,3 +44,31 @@ type Model struct {
 	Created int64  `json:"created"`
 	OwnedBy string `json:"owned_by"`
 }
+
+// ChatCompletionChunk is one event of a streamed chat completion: "data: <chunk>" and a blank line. The stream ends
+// with the event "data: [DONE]".
+type ChatCompletionChunk struct {
+	ID      string        `json:"id"`
+	Object  string        `json:"object"` // "chat.completion.chunk"
+	Created int64         `json:"created"`
+	Model   string        `json:"model"`
+	Choices []ChunkChoice `json:"choices"`
+	Usage   *Usage        `json:"usage,omitempty"` // only on the last chunk, when stream_options.include_usage asks
+}
+
+// ChunkChoice is one choice's part of a chunk.
+type ChunkChoice struct {
+	Index        int     `json:"index"`
+	Delta        Delta   `json:"delta"`
+	Logprobs     *string `json:"logprobs"` // always null here
+	FinishReason *string `json:"finish_reason"`
+}
+
+// Delta is what a chunk adds to a choice's message: the role first, then the content piece by piece.
+type Delta struct {
+	Role    string  `json:"role,omitempty"`
+	Content *string `json:"content,omitempty"`
+}
+
+// Done is the data of a stream's last event.
+const Done = "[DONE]"

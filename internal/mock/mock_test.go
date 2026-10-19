@@ -188,7 +188,10 @@ func TestRequestsItCantServeAreRefusedInOpenAIsShape(t *testing.T) {
 	}{
 		{`{"model":"gpt-9","messages":[{"role":"user","content":"x"}]}`, 404, "model_not_found", "model",
 			openai.TypeInvalidRequest},
-		{hello + `,"stream":true}`, 400, "unsupported_parameter", "stream", openai.TypeInvalidRequest},
+		{hello + `,"stream_options":{"include_usage":true}}`, 400, "invalid_value", "stream_options",
+			openai.TypeInvalidRequest},
+		{hello + `,"stream":true,"stream_options":true}`, 400, "invalid_type", "stream_options",
+			openai.TypeInvalidRequest},
 		{hello + `,"max_tokens":0}`, 400, "invalid_value", "max_tokens", openai.TypeInvalidRequest},
 		{hello + `,"max_tokens":2.5}`, 400, "invalid_value", "max_tokens", openai.TypeInvalidRequest},
 		{hello + `,"max_completion_tokens":"9"}`, 400, "invalid_value", "max_completion_tokens",
@@ -206,7 +209,7 @@ func TestRequestsItCantServeAreRefusedInOpenAIsShape(t *testing.T) {
 			t.Errorf("%s: got %s %s %s, want %s %s %s", tc.body, typ, code, param, tc.typ, tc.code, tc.param)
 		}
 	}
-	if s := p.Stats(); s.Requests != 8 || s.Refused != 8 || s.Answered != 0 {
+	if s := p.Stats(); s.Requests != 9 || s.Refused != 9 || s.Answered != 0 {
 		t.Errorf("stats %+v", s)
 	}
 }

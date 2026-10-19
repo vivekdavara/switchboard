@@ -2,9 +2,10 @@
 //
 //	mockprovider [-addr 127.0.0.1:8118] [-name mock] [-models mock-small,mock-large]
 //	             [-ttft 200ms] [-per-token 5ms] [-jitter 0] [-completion-tokens 32]
-//	             [-error-rate 0] [-error-status 500] [-hang-rate 0] [-seed 1] [-api-key-env NAME]
+//	             [-error-rate 0] [-error-status 500] [-hang-rate 0] [-cut-rate 0] [-seed 1] [-api-key-env NAME]
 //
-// It serves POST /v1/chat/completions, GET /v1/models and GET /livez. With -api-key-env it requires
+// It serves POST /v1/chat/completions (streamed as server-sent events with "stream": true), GET /v1/models and
+// GET /livez. With -api-key-env it requires
 // "Authorization: Bearer" with that environment variable's value. Logs are JSON lines on stderr: one when it
 // listens, one when it stops, with its counts. A usage error exits 2.
 package main
@@ -61,6 +62,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	fs.Float64Var(&cfg.ErrorRate, "error-rate", cfg.ErrorRate, "fraction of requests answered with -error-status")
 	fs.IntVar(&cfg.ErrorStatus, "error-status", cfg.ErrorStatus, "the status of an injected error")
 	fs.Float64Var(&cfg.HangRate, "hang-rate", cfg.HangRate, "fraction of requests never answered")
+	fs.Float64Var(&cfg.CutRate, "cut-rate", cfg.CutRate, "fraction of answers that break off part-way")
 	fs.Uint64Var(&cfg.Seed, "seed", cfg.Seed, "the seed of the fates")
 	keyEnv := fs.String("api-key-env", "", "require this environment variable's value as a bearer key")
 	if err := fs.Parse(args); err != nil {
@@ -98,7 +100,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	go func() { served <- srv.Serve(ln) }()
 	log.Info("listening", "addr", ln.Addr().String(), "name", cfg.Name, "models", cfg.Models, "ttft",
 		cfg.TTFT.String(), "per_token", cfg.PerToken.String(), "jitter", cfg.Jitter, "error_rate", cfg.ErrorRate,
-		"error_status", cfg.ErrorStatus, "hang_rate", cfg.HangRate, "seed", cfg.Seed, "api_key", cfg.APIKey != "")
+		"error_status", cfg.ErrorStatus, "hang_rate", cfg.HangRate, "cut_rate", cfg.CutRate, "seed", cfg.Seed,
+		"api_key", cfg.APIKey != "")
 	if listening != nil {
 		listening <- started{Addr: ln.Addr().String(), Stats: p.Stats}
 	}
@@ -119,6 +122,6 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	}
 	s := p.Stats()
 	log.Info("stopped", "requests", s.Requests, "refused", s.Refused, "failed", s.Failed, "hung", s.Hung,
-		"answered", s.Answered, "abandoned", s.Abandoned, "clean", err == nil)
+		"answered", s.Answered, "streamed", s.Streamed, "cut", s.Cut, "abandoned", s.Abandoned, "clean", err == nil)
 	return 0
 }

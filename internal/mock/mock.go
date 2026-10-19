@@ -14,6 +14,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,9 @@ type Config struct {
 	ErrorRate   float64 // this fraction of requests is answered at once with ErrorStatus
 	ErrorStatus int
 	HangRate    float64 // this fraction is never answered, until the client gives up or the mock closes
+	// CutRate is the fraction of answers that break off part-way: the connection drops after some of the answer
+	// (some of a streamed answer's tokens, or some of a plain answer's bytes) has been written.
+	CutRate float64
 
 	APIKey string // if set, every request must carry "Authorization: Bearer <APIKey>"
 	Seed   uint64
@@ -62,9 +66,9 @@ const MaxRequestBytes = 8 << 20
 const maxChoices = 128
 
 // Stats counts what a provider did. Requests counts every request to /v1/chat/completions; the others count the
-// ones that got that far.
+// ones that got that far. Streamed counts the answers among Answered that were streamed.
 type Stats struct {
-	Requests, Refused, Failed, Hung, Answered, Abandoned int64
+	Requests, Refused, Failed, Hung, Answered, Abandoned, Cut, Streamed int64
 }
 
 // Provider is a mock provider. It is an http.Handler.
@@ -79,6 +83,7 @@ type Provider struct {
 
 	seq                                                  atomic.Int64 // for completion ids
 	requests, refused, failed, hung, answered, abandoned atomic.Int64
+	cut, streamed                                        atomic.Int64
 }
 
 // New checks cfg and makes a provider.
@@ -92,7 +97,8 @@ func New(cfg Config) (*Provider, error) {
 		return nil, errors.New("mock: jitter must be between 0 and 1")
 	case cfg.CompletionTokens < 1:
 		return nil, errors.New("mock: an answer needs at least one token")
-	case cfg.ErrorRate < 0 || cfg.ErrorRate > 1 || cfg.HangRate < 0 || cfg.HangRate > 1:
+	case cfg.ErrorRate < 0 || cfg.ErrorRate > 1 || cfg.HangRate < 0 || cfg.HangRate > 1 || cfg.CutRate < 0 ||
+		cfg.CutRate > 1:
 		return nil, errors.New("mock: rates must be between 0 and 1")
 	case cfg.ErrorRate+cfg.HangRate > 1:
 		return nil, errors.New("mock: the error and hang rates add up to more than 1")
@@ -127,7 +133,7 @@ func (p *Provider) Close() { p.once.Do(func() { close(p.stop) }) }
 func (p *Provider) Stats() Stats {
 	return Stats{
 		Requests: p.requests.Load(), Refused: p.refused.Load(), Failed: p.failed.Load(), Hung: p.hung.Load(),
-		Answered: p.answered.Load(), Abandoned: p.abandoned.Load(),
+		Answered: p.answered.Load(), Abandoned: p.abandoned.Load(), Cut: p.cut.Load(), Streamed: p.streamed.Load(),
 	}
 }
 
@@ -135,6 +141,8 @@ func (p *Provider) Stats() Stats {
 type fate struct {
 	fail, hang       bool
 	ttftF, perTokenF float64 // jitter factors
+	cut              bool    // an answer breaks off,
+	cutAt            float64 // after this fraction of it, in [0, 1)
 }
 
 // draw takes the next request's fate from the RNG. It always takes four numbers, whatever the fate, so the n-th
@@ -143,11 +151,10 @@ type fate struct {
 // different rates compare request for request.
 func (p *Provider) draw() fate {
 	p.mu.Lock()
-	u, f1, f2 := p.rng.Float64(), p.rng.Float64(), p.rng.Float64()
-	_ = p.rng.Float64() // reserved, so a later use doesn't shift the sequence
+	u, f1, f2, c := p.rng.Float64(), p.rng.Float64(), p.rng.Float64(), p.rng.Float64()
 	p.mu.Unlock()
 	j := p.cfg.Jitter
-	return fate{
+	f := fate{
 		// Failures take the bottom of [0, 1) and hangs the top, so raising either rate only takes answers from the
 		// middle (the rates add up to at most 1, so the bands never meet). With hangs right above the failures, a
 		// higher error rate moved the hang band and reshuffled hangs and answers (found in the day-1 review).
@@ -155,7 +162,14 @@ func (p *Provider) draw() fate {
 		hang:      u >= 1-p.cfg.HangRate,
 		ttftF:     1 + j*(2*f1-1),
 		perTokenF: 1 + j*(2*f2-1),
+		// The fourth number, reserved on day 1, decides cuts on its own, so raising the cut rate only turns answers
+		// into cuts. Given a cut, c/CutRate is uniform in [0, 1): where the answer breaks.
+		cut: c < p.cfg.CutRate,
 	}
+	if f.cut {
+		f.cutAt = c / p.cfg.CutRate
+	}
+	return f
 }
 
 func (p *Provider) chatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -222,23 +236,130 @@ func (p *Provider) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		panic(http.ErrAbortHandler)
 	}
 
-	delay := time.Duration(float64(p.cfg.TTFT)*f.ttftF) +
-		time.Duration(float64(p.cfg.PerToken)*f.perTokenF)*time.Duration(tokens)
-	timer := time.NewTimer(delay)
+	includeUsage, e := streamOptions(req)
+	if e != nil {
+		p.refused.Add(1)
+		openai.WriteError(w, e)
+		return
+	}
+	ttft := time.Duration(float64(p.cfg.TTFT) * f.ttftF)
+	perToken := time.Duration(float64(p.cfg.PerToken) * f.perTokenF)
+	c := p.answer(req, tokens, choices)
+	if req.Stream {
+		p.stream(w, r, c, tokens, ttft, perToken, f, includeUsage)
+		return
+	}
+
+	p.wait(r, ttft+perToken*time.Duration(tokens))
+	b, _ := json.Marshal(c)
+	if f.cut {
+		// Promise the whole answer, write part of it, and drop the connection, as a provider that dies mid-answer.
+		p.cut.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(b[:int(f.cutAt*float64(len(b)))])
+		http.NewResponseController(w).Flush()
+		panic(http.ErrAbortHandler)
+	}
+	p.answered.Add(1)
+	openai.WriteJSON(w, http.StatusOK, b)
+}
+
+// wait sleeps for d, or drops the connection if the client goes away or the provider closes first: returning would
+// send an empty 200 to a client still reading (one that half-closed, or any client after Close).
+func (p *Provider) wait(r *http.Request, d time.Duration) {
+	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
 	case <-timer.C:
 	case <-r.Context().Done():
 		p.abandoned.Add(1)
-		panic(http.ErrAbortHandler) // as above: never an empty 200
+		panic(http.ErrAbortHandler)
 	case <-p.stop:
 		p.abandoned.Add(1)
 		panic(http.ErrAbortHandler)
 	}
+}
 
+// stream writes c as server-sent events, as OpenAI streams: after the time to first token, a chunk per choice with
+// the role; then, a token's time apart, a chunk per choice with the next word; then a chunk per choice with the
+// finish reason, the usage if include_usage asked for it, and [DONE]. A cut fate drops the connection after
+// cutAt of the tokens, with no [DONE].
+func (p *Provider) stream(w http.ResponseWriter, r *http.Request, c openai.ChatCompletion, tokens int, ttft,
+	perToken time.Duration, f fate, includeUsage bool) {
+	rc := http.NewResponseController(w)
+	send := func(chunk openai.ChatCompletionChunk) {
+		b, _ := json.Marshal(chunk)
+		fmt.Fprintf(w, "data: %s\n\n", b)
+	}
+	chunk := func(choices ...openai.ChunkChoice) openai.ChatCompletionChunk {
+		return openai.ChatCompletionChunk{ID: c.ID, Object: "chat.completion.chunk", Created: c.Created,
+			Model: c.Model, Choices: choices}
+	}
+	p.wait(r, ttft)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	empty := ""
+	for i := range c.Choices {
+		send(chunk(openai.ChunkChoice{Index: i, Delta: openai.Delta{Role: "assistant", Content: &empty}}))
+	}
+	rc.Flush()
+
+	words := strings.Fields(c.Choices[0].Message.Content)
+	cutAfter := -1
+	if f.cut {
+		cutAfter = int(f.cutAt * float64(tokens))
+	}
+	for k, word := range words {
+		if k == cutAfter {
+			p.cut.Add(1)
+			panic(http.ErrAbortHandler)
+		}
+		p.wait(r, perToken)
+		if k > 0 {
+			word = " " + word
+		}
+		for i := range c.Choices {
+			send(chunk(openai.ChunkChoice{Index: i, Delta: openai.Delta{Content: &word}}))
+		}
+		rc.Flush()
+	}
+	for i, choice := range c.Choices {
+		finish := choice.FinishReason
+		send(chunk(openai.ChunkChoice{Index: i, FinishReason: &finish}))
+	}
+	if includeUsage {
+		last := chunk()
+		last.Choices = []openai.ChunkChoice{}
+		last.Usage = &c.Usage
+		send(last)
+	}
+	fmt.Fprintf(w, "data: %s\n\n", openai.Done)
+	rc.Flush()
 	p.answered.Add(1)
-	b, _ := json.Marshal(p.answer(req, tokens, choices))
-	openai.WriteJSON(w, http.StatusOK, b)
+	p.streamed.Add(1)
+}
+
+// streamOptions reads stream_options.include_usage, which only a streamed request may have.
+func streamOptions(req *openai.ChatRequest) (includeUsage bool, e *openai.Error) {
+	raw, ok := req.Member("stream_options")
+	if !ok || string(raw) == "null" {
+		return false, nil
+	}
+	if !req.Stream {
+		return false, openai.InvalidRequest("stream_options", "invalid_value",
+			"stream_options is only allowed when stream is true")
+	}
+	var opts struct {
+		IncludeUsage *bool `json:"include_usage"`
+	}
+	if raw[0] != '{' || json.Unmarshal(raw, &opts) != nil {
+		return false, openai.InvalidRequest("stream_options", "invalid_type", "stream_options must be an object")
+	}
+	return opts.IncludeUsage != nil && *opts.IncludeUsage, nil
 }
 
 // check refuses what this provider can't serve.
@@ -246,9 +367,6 @@ func (p *Provider) check(req *openai.ChatRequest) *openai.Error {
 	if len(p.cfg.Models) > 0 && !slices.Contains(p.cfg.Models, req.Model) {
 		return openai.Errorf(http.StatusNotFound, openai.TypeInvalidRequest, "model", "model_not_found",
 			"the model %q does not exist on %s", req.Model, p.cfg.Name)
-	}
-	if req.Stream {
-		return openai.InvalidRequest("stream", "unsupported_parameter", "%s doesn't stream yet", p.cfg.Name)
 	}
 	return nil
 }
