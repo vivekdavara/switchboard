@@ -27,10 +27,15 @@ demo:
 # its own work on a body (parse, check, rewrite).
 # The pool runs are short because Go's default of 2 idle connections leaves about one socket in TIME_WAIT per two
 # requests, for 30 s on macOS, out of 16,384 ephemeral ports. Needs a quiet machine.
+# Day 2 adds a streamed answer straight and through the gateway, a model whose first provider is dead (refusing or
+# hanging until its 10 ms timeout) with breakers off and on, and the router's, budget's and breaker's cost per call.
 bench:
 	go test -run '^$$' -bench Overhead -benchtime 20000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench Pool -benchtime 3000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench ParseAndRewrite -benchtime 20000x -count 6 ./internal/openai
+	go test -run '^$$' -bench Stream -benchtime 5000x -count 6 ./internal/gateway
+	go test -run '^$$' -bench DeadProvider -benchtime 500x -count 6 ./internal/gateway
+	go test -run '^$$' -bench . -benchtime 1000000x -count 6 ./internal/route ./internal/budget ./internal/breaker
 
 # Builds for the other platforms, as CI does: a Unix-only call (syscall.Kill) once broke the Windows build unnoticed.
 cross:
