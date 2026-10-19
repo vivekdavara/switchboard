@@ -58,6 +58,7 @@ type Ticket struct {
 	generation uint64
 	probe      bool
 	done       bool
+	late       bool // a probe that reported its success early (Answered): a later Failure is a failure seen then
 }
 
 // Allow asks whether an attempt may go to the provider now. If not, it returns when one may (the end of the
@@ -98,23 +99,51 @@ func (b *Breaker) State() State {
 }
 
 // Success reports that the provider answered.
-func (t *Ticket) Success() { t.report(true, false) }
+func (t *Ticket) Success() {
+	if t != nil {
+		t.late = false
+	}
+	t.report(true, false)
+}
 
-// Failure reports that the provider failed: it answered with an error about itself, or didn't answer.
-func (t *Ticket) Failure() { t.report(false, false) }
+// Failure reports that the provider failed: it answered with an error about itself, or didn't answer. After
+// Answered, it is a failure seen now (lateFailure).
+func (t *Ticket) Failure() {
+	if t != nil && t.late {
+		t.late = false
+		t.b.lateFailure()
+		return
+	}
+	t.report(false, false)
+}
 
 // Release reports an attempt that says nothing about the provider's health (the client left, the gateway is
 // stopping, the provider doesn't know the upstream model). A probe released lets the next request probe.
-func (t *Ticket) Release() { t.report(false, true) }
+func (t *Ticket) Release() {
+	if t != nil {
+		t.late = false
+	}
+	t.report(false, true)
+}
 
-// Fail counts a failure seen after its attempt's ticket has already reported: a streamed answer whose first event
-// was reported as a success (the provider answered, and a half-open breaker shouldn't wait for the whole stream to
-// learn that), and which then broke. It counts in the breaker's state now: one more failure in a row while closed,
-// nothing while open (the provider is skipped already) or half-open (a probe decides that state).
-func (b *Breaker) Fail() {
-	if b.failures == 0 {
+// Answered reports that the provider has begun to answer: a stream's first event. A probe reports its success at
+// once, so a half-open breaker doesn't wait for the whole stream to learn that its provider is back (a half-open
+// breaker held by a streamed probe skipped a healthy provider for as long as one client read slowly; found in the
+// day-2 review). Any other attempt reports when it ends, as a plain one does, so a stream that breaks later still
+// counts as a failure in a row. (Reporting every stream's start as a success reset the count each time, and a
+// provider that broke every stream after its first chunk never tripped its breaker; found in the second review.)
+func (t *Ticket) Answered() {
+	if t == nil || t.b == nil || t.done || !t.probe {
 		return
 	}
+	t.report(true, false)
+	t.late = true
+}
+
+// lateFailure counts the failure of a probe that had reported its success early: its stream broke after the
+// breaker had closed on it. It counts in the breaker's state now: one more failure in a row while closed, nothing
+// while open (the provider is skipped already) or half-open (a new probe decides that state).
+func (b *Breaker) lateFailure() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.state == Closed {

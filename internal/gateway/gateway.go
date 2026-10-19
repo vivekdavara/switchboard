@@ -315,12 +315,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		case healthy:
 			ticket.Success()
 		case unhealthy:
-			ticket.Failure()
-			if res.written {
-				// A stream reports its first event as a success, at the commit (relay), so its ticket has reported
-				// already; its break after that is a failure seen now.
-				g.breakers[t.Provider.Name].Fail()
-			}
+			ticket.Failure() // for a probe that answered (a stream's first event), a failure seen now
 		default:
 			ticket.Release()
 		}

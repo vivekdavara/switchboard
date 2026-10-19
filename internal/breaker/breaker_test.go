@@ -201,34 +201,67 @@ func TestConcurrentFailuresOpenItOnce(t *testing.T) {
 	refused(t, b, c.now().Add(10*time.Second))
 }
 
-func TestALateFailureCountsInTheStateItArrivesIn(t *testing.T) {
+func TestAnAnsweredProbeClosesAtOnceAndALaterFailureCountsThen(t *testing.T) {
 	b, c := setup()
-	// Closed: it counts like any failure, and the third in a row opens the breaker.
+	for range 3 {
+		allow(t, b).Failure()
+	}
+	c.add(10 * time.Second)
+	probe := allow(t, b)
+	probe.Answered() // a stream's first event: the breaker closes now, not when the stream ends
+	if b.State() != Closed {
+		t.Fatalf("%s after the probe answered", b.State())
+	}
+	probe.Failure() // the stream broke: one failure in a row, seen now
 	allow(t, b).Failure()
-	b.Fail()
 	if b.State() != Closed {
 		t.Fatalf("%s after 2 failures", b.State())
 	}
-	b.Fail()
+	allow(t, b).Failure()
 	if b.State() != Open {
-		t.Fatalf("%s after 3", b.State())
+		t.Fatalf("%s after 3: the late failure wasn't counted", b.State())
 	}
-	// Open: it doesn't restart the cooldown.
+
+	// A late failure while open doesn't restart the cooldown, and while half-open the new probe decides.
+	c.add(10 * time.Second)
+	p2 := allow(t, b)
+	p2.Answered()
+	for range 3 {
+		allow(t, b).Failure() // open again
+	}
 	c.add(5 * time.Second)
-	b.Fail()
+	p2.Failure()
 	refused(t, b, c.now().Add(5*time.Second))
-	// Half-open: the probe decides, not a late failure.
 	c.add(5 * time.Second)
-	probe := allow(t, b)
-	b.Fail()
-	probe.Success()
+	p3 := allow(t, b)
+	p3.Answered()
+	p3.Success() // the stream ended well: nothing more
 	if b.State() != Closed {
-		t.Errorf("%s: a late failure decided for the probe", b.State())
+		t.Errorf("%s", b.State())
 	}
-	// Breakers off: nothing.
+}
+
+func TestAnsweredWaitsForTheEndUnlessItIsAProbe(t *testing.T) {
+	// A closed breaker's ticket reports when its attempt ends: a stream that started and then broke is a failure in
+	// a row like any other, so three of them open the breaker (reporting each start as a success reset the count).
+	b, _ := setup()
+	for range 3 {
+		tk := allow(t, b)
+		tk.Answered()
+		if b.State() != Closed {
+			t.Fatalf("%s", b.State())
+		}
+		tk.Failure()
+	}
+	if b.State() != Open {
+		t.Errorf("%s after three streams that broke", b.State())
+	}
+	// Breakers off: Answered and Failure do nothing.
 	off := New(config.Breaker{}, nil)
 	for range 10 {
-		off.Fail()
+		tk, _, _ := off.Allow()
+		tk.Answered()
+		tk.Failure()
 	}
 	if off.State() != Closed {
 		t.Errorf("%s", off.State())

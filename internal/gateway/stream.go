@@ -129,10 +129,11 @@ func eventStream(contentType string) bool {
 // reads slowly (blocking the writes) isn't taken for a provider making no progress. (Before this, a client that paused
 // for longer than the timeout got a healthy stream cut as upstream_timeout, and the provider's breaker counted it.)
 //
-// ticket is the attempt's breaker ticket. The first event is reported on it as a success at the commit: the provider
-// has answered, and a half-open breaker whose probe this is mustn't stay half-open (skipping a healthy provider for
-// every other request) for as long as the stream lasts, which is as long as its client cares to read (found in the
-// day-2 review). A break after that is reported by the caller as a failure seen then (Breaker.Fail).
+// ticket is the attempt's breaker ticket. If it is a half-open breaker's probe, the first event reports the
+// provider's success on it at the commit: the breaker mustn't stay half-open (skipping a healthy provider for every
+// other request) for as long as the stream lasts, which is as long as its client cares to read (found in the day-2
+// review); a break after that is a failure seen then. Any other ticket is reported when the stream ends, as a plain
+// request's is, so breaks count in a row.
 func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx context.Context, p *config.Provider,
 	attempt int, timer *time.Timer, ticket *breaker.Ticket, resp *http.Response) result {
 	defer resp.Body.Close()
@@ -174,9 +175,10 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 			"upstream_error", "the provider %s streamed a first event that isn't a JSON chunk", p.Name)}
 	}
 
-	// The first event commits the response.
+	// The first event commits the response. A probe reports its provider's success now (Ticket.Answered); any
+	// other attempt reports when the stream ends.
 	timer.Stop()
-	ticket.Success()
+	ticket.Answered()
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
