@@ -6,13 +6,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/vivekdavara/switchboard/internal/config"
 	"github.com/vivekdavara/switchboard/internal/mock"
 )
 
@@ -470,5 +473,55 @@ func TestAStreamThatEndsWithoutDoneIsBroken(t *testing.T) {
 	}
 	if x := lastExchange(t, logs); x.Code != "upstream_unavailable" || g.breakers["p0"].State().String() != "open" {
 		t.Errorf("%+v, breaker %s", x, g.breakers["p0"].State())
+	}
+}
+
+func TestStreamingWorksOverHTTP2BothWays(t *testing.T) {
+	// The provider over https and HTTP/2, and the client too: flushing and the dropped connection are HTTP/2
+	// frames there (DATA frames, and RST_STREAM for the abort), not chunks of an HTTP/1.1 body.
+	var proto atomic.Value
+	cut := pacedMock(t, "mock-a", 0, func(c *mock.Config) { c.CutRate, c.Models = 1, nil })
+	whole := pacedMock(t, "mock-a", 0, nil)
+	up := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proto.Store(r.Proto)
+		if strings.Contains(string(mustRead(r)), `"model":"cut"`) {
+			cut.ServeHTTP(w, r)
+			return
+		}
+		whole.ServeHTTP(w, r)
+	}))
+	up.EnableHTTP2 = true
+	up.StartTLS()
+	t.Cleanup(up.Close)
+	cfg, err := config.Parse([]byte(fmt.Sprintf(`{"providers":[{"name":"tls","base_url":%q}],`+
+		`"models":[{"name":"m","provider":"tls","upstream_model":"mock-small"},`+
+		`{"name":"c","provider":"tls","upstream_model":"cut"}]}`, up.URL+"/v1")), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := NewTransport()
+	tr.TLSClientConfig = up.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	logs := &syncBuffer{}
+	srv := httptest.NewUnstartedServer(New(cfg, tr, slog.New(slog.NewJSONHandler(logs, nil))))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	defer func() {
+		if t.Failed() {
+			t.Log(logs)
+		}
+	}()
+
+	resp, events, err := readStream(t, srv, askStream)
+	if err != nil || resp.ProtoMajor != 2 || resp.StatusCode != 200 || len(events) != 35 ||
+		events[34].raw != "data: [DONE]\n\n" || proto.Load() != "HTTP/2.0" {
+		t.Fatalf("%s %d, %d events, %v; upstream %v", resp.Proto, resp.StatusCode, len(events), err, proto.Load())
+	}
+	resp, events, err = readStream(t, srv, strings.Replace(askStream, `"m"`, `"c"`, 1))
+	if resp.ProtoMajor != 2 || resp.StatusCode != 200 || err == nil {
+		t.Fatalf("%s %d, the body ended with %v; want a reset stream", resp.Proto, resp.StatusCode, err)
+	}
+	if code := lastEventError(t, events); code != "upstream_unavailable" {
+		t.Errorf("code %q", code)
 	}
 }
