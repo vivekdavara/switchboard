@@ -369,8 +369,9 @@ clean end without `[DONE]`, are caught now). Then a review (one agent, 21 minute
 as failing tests, kept as `review_d2_*_test.go` (a slow client cut as the provider's timeout, which I had fixed
 meanwhile; a streamed probe holding its breaker; a `[DONE]`-only stream as an answer; the mock checking
 `stream_options` after its draw), and listed 24 one-line changes no test caught. Each was run as a mutant here
-afterwards: 23 fail a test now (`health_test.go` and others), and one, a cleanly ended stream's verdict for its
-breaker, no longer changes anything, since a stream reports its success at its first event.
+afterwards: all 24 fail a test now (`health_test.go` and others). A second review (one agent, at `ff95f4f`, of the
+fixes only) found that the first fix for the streamed probe had reported every stream's start as a success, so breaks
+after the first chunk never added up to an open breaker; now only a probe reports early.
 
 ## Design decisions
 

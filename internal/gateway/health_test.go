@@ -162,3 +162,27 @@ func TestAProbeThatFindsNobodyReopensTheBreaker(t *testing.T) {
 		t.Errorf("after an unreachable probe: %s", got)
 	}
 }
+
+func TestAWholeStreamResetsTheFailuresInARow(t *testing.T) {
+	// failures 2: a failure, a stream that ends well, a failure. The stream reports its success when it ends (it's
+	// no probe), which resets the count, so the breaker stays closed; with the stream counting for nothing, the two
+	// failures would be in a row and open it.
+	var n atomic.Int32
+	up := newProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n.Add(1) == 2 {
+			streaming([]string{chunk, "data: [DONE]\n\n"}, 0, false).ServeHTTP(w, r)
+			return
+		}
+		answering(500, `{}`).ServeHTTP(w, r)
+	}))
+	srv, g, _ := gatewayFor(t, `"circuit_breaker":{"failures":2,"cooldown":"1m"}`, []string{at(up, "")}, "m=p0/x")
+	plain := `{"model":"m","messages":[{"role":"user","content":"x"}]}`
+	send(t, srv, plain)
+	if _, events, err := readStream(t, srv, askStream); err != nil || len(events) != 2 {
+		t.Fatalf("%d events, %v", len(events), err)
+	}
+	send(t, srv, plain)
+	if got := g.breakers["p0"].State().String(); got != "closed" {
+		t.Errorf("%s: the whole stream didn't reset the failures in a row", got)
+	}
+}

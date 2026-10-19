@@ -204,13 +204,15 @@ model, not the provider's health (its other models may be fine). Answers, includ
 successes. A client leaving or the stop count for nothing. A 429 is a failure: while a provider rate-limits the
 gateway's key, sending it every request only collects more 429s.
 
-**A stream reports at its first event.** A ticket used to be reported when its attempt ended, which for a stream is
-when the stream ends: a half-open breaker whose probe was a stream stayed half-open that long, and every other request
-skipped the healthy provider as `circuit_open`, for as long as one client cared to read (found in the day-2 review).
-Now the first event is reported as the success it is, at the commit; a break after that counts through
-`Breaker.Fail`, as a failure seen then (one more in a row while closed; nothing while open, or while half-open, where
-a probe decides). `TestEachOutcomeTellsTheBreakerWhatItShould` makes 21 kinds of answer a probe and checks the
-verdict of each.
+**A streamed probe reports at its first event.** A ticket is reported when its attempt ends, which for a stream is
+when the stream ends. For a half-open breaker's probe that was too late: the breaker stayed half-open for the whole
+stream, and every other request skipped the healthy provider as `circuit_open`, for as long as one client cared to
+read (found in the day-2 review). So a probe reports its success at the commit (`Ticket.Answered`), and if its stream
+breaks later, that is a failure seen then (one more in a row while closed; nothing while open, or while half-open,
+where a new probe decides). Every other ticket still reports when its stream ends, so breaks count in a row: the first
+fix reported every stream's start as a success, which reset the count each time, and a provider that broke every
+stream after its first chunk never tripped its breaker (found in the second review). `TestEachOutcomeTellsTheBreakerWhatItShould`
+makes 21 kinds of answer a probe and checks the verdict of each.
 
 **Generations.** Every change of state starts a new generation, and a result counts only in the generation its
 attempt was allowed in. Without that, a slow request allowed while the breaker was closed, failing after it opened,

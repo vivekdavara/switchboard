@@ -378,14 +378,21 @@ event whose data is the empty string. After the fix it ran 5.4 million inputs in
 One agent reviewed `b3b5e1f` for 21 minutes and reproduced four bugs as failing tests: the slow-client timeout (which
 I had found and fixed meanwhile, at `f514304`); a streamed probe holding its half-open breaker for the whole stream,
 so a healthy provider was skipped as `circuit_open` for as long as one client kept reading slowly (now the success is
-reported at the first event, and a later break through `Breaker.Fail`); a stream of nothing but `data: [DONE]`
+reported at the first event, if it is a probe); a stream of nothing but `data: [DONE]`
 committing an empty 200 and a success; and the mock checking `stream_options` after its random draw, so a refusal
 could become an injected 500 and shifted every later fate. Its suspicions gave seven more changes (a first event
 that isn't a JSON chunk falls back; a provider's own 502, 504 and 524 count as unanswered; no budget spent once the
 client has left; pings aren't progress; broken streams log at WARN; the budget counts only requests that made an
 attempt; a misleading comment), and its list of 24
 one-line changes no test caught gave the tests in `health_test.go` and five more: 23 of them fail a test now, and the
-24th (a cleanly ended stream's verdict) changes nothing any more, because a stream reports at its first event.
+24th (a cleanly ended stream's verdict) does too since the second review's fix.
+
+**And the second review?**
+It reviewed only the fixes, and found that my fix for the streamed probe was too broad: I had made every stream
+report a success at its first event, which resets a breaker's failures in a row, so a provider that broke every
+stream after its first chunk never opened its breaker. My test had used `failures: 1`, which a single break trips,
+so it couldn't see that. Now only a half-open breaker's probe reports early (`Ticket.Answered`); every other stream
+reports when it ends. Reviewing the fixes paid off again, as on day 1.
 
 **How did you make the mock stream, and fail mid-stream, deterministically?**
 It writes OpenAI's chunks a token's time apart and `data: [DONE]` (`mock.stream`). `-cut-rate` breaks answers off;
