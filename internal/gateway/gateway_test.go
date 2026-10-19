@@ -286,9 +286,6 @@ func TestRequestsTheGatewayRefusesNeverReachAProvider(t *testing.T) {
 			`{"model":"fast","MODEL":"other","messages":[{"role":"user","content":"x"}]}`, 400,
 			"invalid_parameter", "MODEL"},
 		{"no messages", "application/json", `{"model":"fast"}`, 400, "missing_required_parameter", "messages"},
-		{"streaming", "application/json",
-			`{"model":"fast","messages":[{"role":"user","content":"x"}],"stream":true}`, 400,
-			"unsupported_parameter", "stream"},
 		{"an unknown model", "application/json", `{"model":"gpt-9","messages":[{"role":"user","content":"x"}]}`,
 			404, "model_not_found", "model"},
 		{"a model by its upstream name", "application/json",
@@ -322,8 +319,8 @@ func TestRequestsTheGatewayRefusesNeverReachAProvider(t *testing.T) {
 	if n := len(up.requests()); n != 1 {
 		t.Errorf("the provider got %d requests, want only the last one", n)
 	}
-	if n := strings.Count(logs.String(), `"msg":"chat completion"`); n != 13 {
-		t.Errorf("%d log lines, want 13:\n%s", n, logs)
+	if n := strings.Count(logs.String(), `"msg":"chat completion"`); n != 12 {
+		t.Errorf("%d log lines, want 12:\n%s", n, logs)
 	}
 }
 

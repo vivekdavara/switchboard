@@ -38,6 +38,10 @@ var ErrShutdown = errors.New("the gateway is shutting down")
 // StatusClientClosed is what the log says when the client went away before its answer: nginx's 499.
 const StatusClientClosed = 499
 
+// errProviderTimeout is the cause an attempt's context is cancelled with when the provider makes no progress for its
+// timeout.
+var errProviderTimeout = errors.New("the provider's timeout passed with no progress")
+
 // Gateway is the handler. Make one with New.
 type Gateway struct {
 	cfg    *config.Config
@@ -185,6 +189,8 @@ type exchange struct {
 	code            string       // the error's code, if the gateway answered with one
 	err             error        // the cause behind it, for the log only
 	upstreamSent    bool         // the request went upstream, so the upstream fields mean something
+	streamed        bool         // the answer was streamed: status 200 went out with the first event
+	events          int          // data events streamed to the client
 	attempts        []attemptLog // the attempts made, in order
 	tried           []attemptLog // the attempts and the targets skipped, in order
 	budgetSpent     bool         // a retry was refused by the retry budget
@@ -253,11 +259,6 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	x.model = req.Model
-	if req.Stream {
-		g.fail(w, x, openai.InvalidRequest("stream", "unsupported_parameter",
-			"stream: true isn't supported yet; it arrives with streaming passthrough on day 2"), nil)
-		return
-	}
 
 	// 5. Route.
 	model, ok := g.cfg.Route(req.Model)
@@ -293,7 +294,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			x.budgetSpent = true
 			break
 		}
-		res := g.try(r, x, t, req.WithModel(t.UpstreamModel))
+		res := g.try(w, r, x, t, req.WithModel(t.UpstreamModel), req.Stream, len(x.attempts)+1)
 		switch res.health {
 		case healthy:
 			ticket.Success()
@@ -308,6 +309,12 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			// be reading (found in the day-1 review). The log line still runs, deferred.
 			x.status, x.err = StatusClientClosed, res.cause
 			panic(http.ErrAbortHandler)
+		}
+		if res.written { // a stream: it has ended, cleanly or with its error event
+			if res.err != nil {
+				panic(http.ErrAbortHandler) // so no client can take the stream for a complete one
+			}
+			return
 		}
 		last = &res
 		if res.kind == answered {
@@ -366,9 +373,10 @@ const (
 
 // result is one attempt, and what the client gets if no other target is tried after it.
 type result struct {
-	kind   outcome
-	health health
-	gone   bool // the client went away: drop the connection
+	kind    outcome
+	health  health
+	gone    bool // the client went away: drop the connection
+	written bool // the answer is written already (a stream that started); with err, it ended with that error
 
 	status int         // passed through: the provider's status and bytes,
 	body   []byte      //
@@ -392,8 +400,10 @@ func (x *exchange) skip(t config.Target, why string) {
 	x.tried = append(x.tried, attemptLog{Provider: t.Provider.Name, UpstreamModel: t.UpstreamModel, Skipped: why})
 }
 
-// try sends body to the target's provider and says what came of it. It writes nothing to the client.
-func (g *Gateway) try(r *http.Request, x *exchange, t config.Target, body []byte) (res result) {
+// try sends body to the target's provider and says what came of it. It writes nothing to the client, unless a
+// stream starts: then it writes the whole stream (relay).
+func (g *Gateway) try(w http.ResponseWriter, r *http.Request, x *exchange, t config.Target, body []byte, stream bool,
+	attempt int) (res result) {
 	p := t.Provider
 	x.provider, x.upstreamModel = p.Name, t.UpstreamModel
 	x.upstreamSent, x.upstreamStatus = true, 0
@@ -412,8 +422,13 @@ func (g *Gateway) try(r *http.Request, x *exchange, t config.Target, body []byte
 		x.tried = append(x.tried, entry)
 	}()
 
-	ctx, cancel := context.WithTimeout(r.Context(), p.Timeout)
-	defer cancel()
+	// The provider's timeout is the longest the gateway waits for its next sign of progress: the whole answer, or
+	// a stream's next event.
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
+	timer := time.AfterFunc(p.Timeout, func() { cancel(errProviderTimeout) })
+	defer timer.Stop()
+	progress := func() { timer.Reset(p.Timeout) }
 	// Whether the provider got the whole request decides whether a failure may have cost it work: one that never
 	// did can't have started (DESIGN.md, "Fallback").
 	var delivered atomic.Bool
@@ -436,6 +451,9 @@ func (g *Gateway) try(r *http.Request, x *exchange, t config.Target, body []byte
 		"Accept":       {"application/json"},
 		"X-Request-Id": {x.id},
 	}
+	if stream {
+		up.Header.Set("Accept", "text/event-stream")
+	}
 	if p.APIKey != "" {
 		up.Header.Set("Authorization", "Bearer "+p.APIKey)
 	}
@@ -445,6 +463,9 @@ func (g *Gateway) try(r *http.Request, x *exchange, t config.Target, body []byte
 		return g.unreached(r, ctx, p, err, delivered.Load())
 	}
 	x.upstreamStatus = resp.StatusCode
+	if stream && resp.StatusCode == http.StatusOK && eventStream(resp.Header.Get("Content-Type")) {
+		return g.relay(w, r, x, ctx, p, attempt, progress, resp)
+	}
 	answer, err := io.ReadAll(io.LimitReader(resp.Body, g.cfg.MaxResponseBytes+1))
 	resp.Body.Close()
 	if err != nil {
@@ -459,6 +480,10 @@ func (g *Gateway) try(r *http.Request, x *exchange, t config.Target, body []byte
 	// The mapping table: an answer about the request passes through; anything else is the gateway's error, and
 	// a reason to try another target.
 	switch status := resp.StatusCode; {
+	case status == http.StatusOK && stream:
+		// Asked to stream, it answered in one piece (or with something else): it did the work, wrongly.
+		return result{kind: unanswered, health: unhealthy, err: upstreamError(http.StatusBadGateway,
+			"upstream_error", "the provider %s answered a streaming request without an event stream", p.Name)}
 	case status == http.StatusOK && jsonObject(answer):
 		return result{kind: answered, health: healthy, status: status, body: answer}
 	case status == http.StatusOK:
@@ -513,9 +538,10 @@ func (g *Gateway) unreached(r *http.Request, ctx context.Context, p *config.Prov
 			openai.TypeServer, "", "shutting_down", "the gateway is shutting down; retry"), cause: err}
 	case r.Context().Err() != nil:
 		return result{gone: true, cause: err}
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+	case context.Cause(ctx) == errProviderTimeout:
 		return result{kind: kind, health: unhealthy, err: upstreamError(http.StatusGatewayTimeout,
-			"upstream_timeout", "the provider %s didn't answer within %s", p.Name, p.Timeout), cause: err}
+			"upstream_timeout", "the provider %s made no progress for %s (its timeout)", p.Name, p.Timeout),
+			cause: err}
 	default:
 		return result{kind: kind, health: unhealthy, err: upstreamError(http.StatusBadGateway,
 			"upstream_unavailable", "the provider %s couldn't be reached or broke off", p.Name), cause: err}
@@ -564,6 +590,9 @@ func (g *Gateway) logExchange(x *exchange) {
 	}
 	if len(x.tried) > 1 || len(x.attempts) != len(x.tried) { // more than the fields above say
 		attrs = append(attrs, slog.Any("tried", x.tried))
+	}
+	if x.streamed {
+		attrs = append(attrs, slog.Bool("streamed", true), slog.Int("events", x.events))
 	}
 	if x.budgetSpent {
 		attrs = append(attrs, slog.Bool("retry_budget_spent", true))

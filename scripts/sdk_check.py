@@ -8,7 +8,7 @@ keys until day 3, and it never forwards them.
 import os
 import sys
 
-from openai import BadRequestError, NotFoundError, OpenAI
+from openai import APIError, BadRequestError, NotFoundError, OpenAI
 
 base_url = os.environ.get("SWITCHBOARD_URL", "http://127.0.0.1:8108/v1")
 client = OpenAI(base_url=base_url, api_key="placeholder-not-a-key", max_retries=0, timeout=10)
@@ -21,6 +21,18 @@ def check(name, ok, detail):
     print(f"{'ok  ' if ok else 'FAIL'}  sdk: {name:30} {detail}")
     failures += not ok
 
+
+if sys.argv[1:] == ["cut"]:
+    # scripts/demo.sh has restarted mock-b to break every answer off part-way: the stream starts, then breaks, and
+    # the gateway's last event is an error, which the SDK raises.
+    seen = 0
+    try:
+        for chunk in client.chat.completions.create(model="smart", messages=hello, stream=True):
+            seen += 1
+        check("a stream that breaks", False, f"{seen} chunks and no error")
+    except APIError as e:
+        check("a stream that breaks", e.code == "upstream_unavailable", f"APIError {e.code} after {seen} chunks")
+    sys.exit(1 if failures else 0)
 
 ids = [m.id for m in client.models.list()]
 check("the models", ids == ["fast", "gpt-4o-mini", "smart", "mock-small"], ids)
@@ -66,10 +78,29 @@ try:
 except NotFoundError as e:
     check("an unknown model", e.status_code == 404 and e.code == "model_not_found", f"{e.status_code} {e.code}")
 
+text, finish, usage, chunks = "", None, None, 0
+for chunk in client.chat.completions.create(
+    model="fast", messages=hello, stream=True, stream_options={"include_usage": True}, max_tokens=12
+):
+    chunks += 1
+    usage = chunk.usage or usage
+    for c in chunk.choices:
+        text += c.delta.content or ""
+        finish = c.finish_reason or finish
+check(
+    "streaming",
+    text.startswith("This is mock-a answering as mock-small")
+    and len(text.split()) == 12
+    and finish == "length"
+    and usage is not None
+    and usage.completion_tokens == 12,
+    f"{chunks} chunks, {len(text.split())} words, {finish}",
+)
+
 try:
-    client.chat.completions.create(model="fast", messages=hello, stream=True)
-    check("streaming (day 2)", False, "no error")
+    client.chat.completions.create(model="fast", messages=hello, stream=True, n=0)
+    check("a bad stream request", False, "no error")
 except BadRequestError as e:
-    check("streaming (day 2)", e.status_code == 400 and e.param == "stream", f"{e.status_code} {e.param}")
+    check("a bad stream request", e.status_code == 400 and e.param == "n", f"{e.status_code} {e.param}")
 
 sys.exit(1 if failures else 0)

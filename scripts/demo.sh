@@ -66,7 +66,7 @@ check "smart, through mock-b"       200 '"finish_reason":"length"' "${args[@]}"
 mapfile -d '' args < <(chat "$(ask gpt-9)")
 check "an unknown model"            404 '"code":"model_not_found"' "${args[@]}"
 mapfile -d '' args < <(chat "$(ask fast ',"stream":true')")
-check "streaming (day 2)"           400 '"param":"stream"'        "${args[@]}"
+check "streaming"                   200 'data: [DONE]'            -N "${args[@]}"
 mapfile -d '' args < <(chat '{"model":"fast","model":"smart","messages":[]}')
 check "a model given twice"         400 '"code":"invalid_json"'   "${args[@]}"
 check "a form post"                 415 '"code":"unsupported_media_type"' \
@@ -87,6 +87,26 @@ kill "$mock_b"
 wait "$mock_b" 2>/dev/null || true
 mapfile -d '' args < <(chat "$(ask smart)")
 check "smart, with mock-b down"     200 'This is mock-a answering as mock-large' "${args[@]}"
+
+# mock-b again, now breaking every answer off part-way. A stream through it has started when it breaks, so the
+# client can't be given a 502 or another provider's answer: it gets an error event, and the transfer is cut (curl's
+# exit status 18, "transfer closed with outstanding read data remaining").
+bin/mockprovider -addr 127.0.0.1:8119 -name mock-b -ttft 10ms -per-token 1ms -cut-rate 1 2>run/mock-b-cut.log &
+pids+=($!)
+for _ in $(seq 100); do curl -sf http://127.0.0.1:8119/livez >/dev/null 2>&1 && break; sleep 0.1; done
+mapfile -d '' args < <(chat "$(ask smart ',"stream":true')")
+curl_exit=0
+status=$(curl -s -N -o run/body -w '%{http_code}' "${args[@]}") || curl_exit=$?
+if [[ $status == 200 && $curl_exit == 18 ]] && grep -qF '"code":"upstream_unavailable"' run/body &&
+  ! grep -qF '[DONE]' run/body; then
+  printf 'ok    %-34s %s, curl exit %s\n' "a stream that breaks" "$status" "$curl_exit"
+else
+  printf 'FAIL  %-34s %s, curl exit %s: %s\n' "a stream that breaks" "$status" "$curl_exit" "$(tail -c 300 run/body)"
+  failures=$((failures + 1))
+fi
+if [[ -n $sdk_python ]]; then
+  "$sdk_python" scripts/sdk_check.py cut || failures=$((failures + 1))
+fi
 
 echo
 echo "The gateway's log (run/switchboard.log), one line per request:"
