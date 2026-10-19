@@ -325,6 +325,17 @@ and opening its breaker would take them down too (`TestA404DoesNotTripTheProvide
 is rate-limiting the gateway's key; sending it every request only collects more 429s, so skipping it for a cooldown
 is right.
 
+**What does the breaker buy, in numbers?**
+`BenchmarkDeadProvider` (README "Results (day 2)"): a model whose first provider hangs until its 10 ms timeout, with
+a standby that answers. With breakers off, every request waits the timeout first: 13.3 ms at p50. With them on, the
+first five requests pay it and the rest skip the dead provider: 88 µs at p50, the healthy path's, and the mean falls
+from 13.2 ms to 0.21 ms. Against a provider that refuses connections the saving is only the refused dial, about
+40 µs. With real timeouts of 30 to 60 s, the hanging case is the one that matters.
+
+**And what does all of day 2 cost a request that needs none of it?**
+About 2 µs at p50 (day 1's overhead benchmark: 44 µs added for a small request, against 42); the router, the budget
+and the breaker together are about 0.2 µs of that, per their microbenchmarks.
+
 ## Streaming (day 2)
 
 **How do you stream through a gateway that also falls back?**
@@ -361,6 +372,18 @@ it, and fixed it by stopping the timer around each write (`TestASlowClientIsNotT
 at a time) with a splitter that has the whole input in memory. Its first run found that `data: ` with an empty value
 came back as an event with no data, because `bytes.Join` of one empty slice returns nil; by the SSE spec it's an
 event whose data is the empty string. After the fix it ran 5.4 million inputs in a minute without a difference.
+
+**What did the review find in day 2's code?**
+One agent reviewed `b3b5e1f` for 21 minutes and reproduced four bugs as failing tests: the slow-client timeout (which
+I had found and fixed meanwhile, at `f514304`); a streamed probe holding its half-open breaker for the whole stream,
+so a healthy provider was skipped as `circuit_open` for as long as one client kept reading slowly (now the success is
+reported at the first event, and a later break through `Breaker.Fail`); a stream of nothing but `data: [DONE]`
+committing an empty 200 and a success; and the mock checking `stream_options` after its random draw, so a refusal
+could become an injected 500 and shifted every later fate. Its suspicions gave six more changes (a provider's own
+502, 504 and 524 count as unanswered; no budget spent once the client has left; pings aren't progress; broken
+streams log at WARN; the budget counts only requests that made an attempt; a misleading comment), and its list of
+one-line changes no test caught gave the tests in `health_test.go` and five more; each now fails when its line is
+broken.
 
 **How did you make the mock stream, and fail mid-stream, deterministically?**
 It writes OpenAI's chunks a token's time apart and `data: [DONE]` (`mock.stream`). `-cut-rate` breaks answers off;

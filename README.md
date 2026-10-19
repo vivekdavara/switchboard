@@ -231,6 +231,59 @@ which the gateway uses for https providers, one connection carries many requests
 **Compatibility:** `make demo` passes its eight curl checks and the eight checks of the official OpenAI Python SDK
 (openai 3.35.1) here and in CI.
 
+## Results (day 2)
+
+Measured on the same Apple M3 (8 cores), macOS 26.6.2, Go 1.27.1, **on battery** (57% to 56%, Low Power Mode off),
+other applications open, load average 2.4 to 3.0, at commit `25743b6`, 16:15 to 16:17. Medians of 6 runs, ranges in
+brackets. The providers are the mock with no simulated latency, or test servers that refuse or hang, on loopback; the
+requests are synthetic.
+
+```bash
+make bench > run/bench-day2.txt
+python3 scripts/bench_medians.py < run/bench-day2.txt
+```
+
+**What day 2 costs a request that needs no fallback.** Day 1's `BenchmarkOverhead` again, now through the attempt
+loop (route, budget, breaker): through the gateway 83 µs at p50 [83, 84] for the 79-byte request and 172 µs [171,
+172] for the 4 KB conversation, against 39 and 87 µs straight to the mock: 44 and 85 µs added, against day 1's 42
+and 84. The parts on their own, per call: `route.Order` 19.7 ns for one target and 114.5 ns (4 allocations) for
+three and a standby; the budget's `Request` and `Retry` together 101 ns (no allocation); a closed breaker's `Allow`
+and `Success` 42 ns (1 allocation).
+
+**Streaming** (`BenchmarkStream`, a 32-word answer: 34 chunks and `[DONE]`, one stream at a time, 5,000 a run):
+
+| | First event, p50 | Whole stream, p50 / p99 |
+|---|---|---|
+| straight to the mock | 40 µs [40, 40] | 145 µs [144, 146] / 285 µs [256, 772] |
+| through the gateway | 84 µs [84, 85] | 195 µs [194, 195] / 408 µs [400, 439] |
+
+The gateway adds 44 µs to the first event (the second hop, the parse, and reading the provider's first event before
+committing) and 6 µs more to the other 34 events together. With no latency the mock writes its events in a burst, so
+this is the relay's own cost, not a model's pace (`TestAStreamIsRelayedEventByEventAsItArrives` checks the pace).
+
+**A dead provider, with and without breakers** (`BenchmarkDeadProvider`: a model whose first target is down and
+whose standby answers; the dead one either refuses connections or accepts them and never answers, until its 10 ms
+timeout; one request at a time, 500 a run; breakers at 5 failures and a 10 s cooldown, which no run lasted long
+enough to reach):
+
+| The dead provider | Breakers off: p50 / p99 / mean | Breakers on: p50 / p99 / mean |
+|---|---|---|
+| refuses connections | 123 / 278.5 / 127.6 µs | 84 / 205 / 88.2 µs |
+| hangs until its timeout | 13.3 ms / 15.9 ms / 13.2 ms | 88 µs / 12.0 ms / 212.9 µs |
+
+With breakers off, every request first waits for the dead provider: a refused connection costs about 40 µs, a hang
+the whole 10 ms timeout and then some (13.3 ms at p50, 3.3 ms more than the timeout and the standby's answer
+account for; I haven't traced where those go). With breakers on, the first five requests pay that, and the rest go straight to the standby:
+the p50 is the healthy path's, and the p99 is those first five of 500. Against a hanging provider the mean falls
+62-fold, from 13.2 ms to 0.21 ms.
+
+**Fuzzing:** `FuzzEventReaderAgreesWithTheReference` ran 5,455,590 inputs in 60 s with no failure after its first
+run's find (`go test -run '^$' -fuzz FuzzEventReaderAgreesWithTheReference -fuzztime 60s ./internal/gateway`, at
+`943569d`, with a review's tests running alongside).
+
+**Compatibility:** `make demo` passes its nine curl checks and the eleven checks of the official OpenAI Python SDK
+(openai 3.35.1), streaming and the SDK raising a broken stream's error event included, here and in CI.
+
 ## Configuration
 
 `configs/local.json` routes three models (and an alias) to the two mocks; `smart` has a standby:
