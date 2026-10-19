@@ -203,6 +203,10 @@ func TestBeforeItsFirstEventAStreamsFailureIsAnErrorLikeAnyOther(t *testing.T) {
 			"no progress"},
 		{"JSON instead of a stream", answering(200, `{"id":"c","object":"chat.completion","choices":[]}`), 502,
 			"upstream_error", "without an event stream"},
+		{"[DONE] alone", streaming([]string{"data: [DONE]\n\n"}, 0, false), 502, "upstream_error",
+			"before its first chunk"},
+		{"a first event that isn't JSON", streaming([]string{"data: <html>\n\n"}, 0, false), 502, "upstream_error",
+			"isn't a JSON chunk"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p0 := newProvider(t, tc.h)

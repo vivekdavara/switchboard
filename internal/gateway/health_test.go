@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -184,5 +186,75 @@ func TestAWholeStreamResetsTheFailuresInARow(t *testing.T) {
 	send(t, srv, plain)
 	if got := g.breakers["p0"].State().String(); got != "closed" {
 		t.Errorf("%s: the whole stream didn't reset the failures in a row", got)
+	}
+}
+
+func TestTheTimeoutCountsPingsOnceAndADataEventRestartsIt(t *testing.T) {
+	// A 900 ms timeout. After the first chunk: a ping at 300 ms leaves 600; the next chunk 450 ms after the ping
+	// comes within it, and restarts the whole 900; then 750 ms to [DONE] is within that. Counting pings twice,
+	// not restarting at the chunk, or starting from half the timeout would each cut this stream (the second
+	// review's survivors).
+	up := newProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		rc := http.NewResponseController(w)
+		for _, step := range []struct {
+			wait time.Duration
+			send string
+		}{{0, chunk}, {300 * time.Millisecond, ": ping\n\n"}, {450 * time.Millisecond, chunk},
+			{750 * time.Millisecond, "data: [DONE]\n\n"}} {
+			select {
+			case <-time.After(step.wait):
+			case <-r.Context().Done():
+				return
+			}
+			fmt.Fprint(w, step.send)
+			rc.Flush()
+		}
+	}))
+	srv, _, logs := gatewayFor(t, "", []string{at(up, `"timeout":"900ms"`)}, "m=p0/x")
+	_, events, err := readStream(t, srv, askStream)
+	if err != nil || len(events) != 4 || events[3].raw != "data: [DONE]\n\n" {
+		t.Errorf("%d events, %v: the stream was cut\n%s", len(events), err, logs)
+	}
+	// A whole stream is no warning.
+	if !strings.Contains(logs.String(), `"level":"INFO","msg":"chat completion"`) {
+		t.Errorf("log: %s", logs)
+	}
+}
+
+func TestTheTimerIsStoppedBeforeTheFirstWrite(t *testing.T) {
+	// A first chunk of 2 MB to a client that reads nothing for 900 ms, through sockets with small buffers, so the
+	// gateway's first write blocks for longer than the provider's 500 ms timeout: that wait is the client's. The
+	// provider sends [DONE] 400 ms after the chunk, within its timeout, and after the gateway has read the chunk, so
+	// it isn't already buffered when a timer left running would fire.
+	big := `data: {"id":"c","object":"chat.completion.chunk","choices":[],"pad":"` + strings.Repeat("z", 2<<20) +
+		"\"}\n\n"
+	up := newProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, big)
+		http.NewResponseController(w).Flush()
+		select {
+		case <-time.After(400 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+	_, g, _ := gatewayFor(t, `"max_response_bytes":67108864`, []string{at(up, `"timeout":"500ms"`)}, "m=p0/x")
+	srv := httptest.NewUnstartedServer(g)
+	srv.Listener = smallWriteBuffers{srv.Listener}
+	srv.Start()
+	defer srv.Close()
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/chat/completions", strings.NewReader(askStream))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	time.Sleep(900 * time.Millisecond)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil || !strings.HasSuffix(string(b), "data: [DONE]\n\n") || strings.Contains(string(b), `"error"`) {
+		t.Errorf("read %d bytes, %v; ends %q", len(b), err, b[max(0, len(b)-100):])
 	}
 }

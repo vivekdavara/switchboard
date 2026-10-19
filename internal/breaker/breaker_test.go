@@ -267,3 +267,25 @@ func TestAnsweredWaitsForTheEndUnlessItIsAProbe(t *testing.T) {
 		t.Errorf("%s", off.State())
 	}
 }
+
+func TestAProbesLateFailureWhileHalfOpenIsIgnored(t *testing.T) {
+	// failures 1. Probe a answers (closed), the breaker opens again, its cooldown passes, and probe b is out when
+	// a's stream breaks: a's failure must not open the breaker under b (b decides), so b's success closes it.
+	c := &clock{t: time.Date(2026, 10, 19, 16, 0, 0, 0, time.UTC)}
+	b := New(config.Breaker{Failures: 1, Cooldown: 10 * time.Second}, c.now)
+	allow(t, b).Failure()
+	c.add(10 * time.Second)
+	a := allow(t, b)
+	a.Answered()
+	allow(t, b).Failure() // open again
+	c.add(10 * time.Second)
+	pb := allow(t, b)
+	a.Failure()
+	if b.State() != HalfOpen {
+		t.Fatalf("%s: a late failure acted while half-open", b.State())
+	}
+	pb.Success()
+	if b.State() != Closed {
+		t.Errorf("%s", b.State())
+	}
+}

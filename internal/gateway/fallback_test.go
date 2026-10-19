@@ -282,7 +282,7 @@ func TestAnOpenBreakerSkipsItsProvider(t *testing.T) {
 	resp, b = send(t, srv, `{"model":"only","messages":[{"role":"user","content":"x"}]}`)
 	if _, code, _, _ := errorOf(t, b); resp.StatusCode != 503 || code != "circuit_open" ||
 		(resp.Header.Get("Retry-After") != "30" && resp.Header.Get("Retry-After") != "29") ||
-		len(failing.requests()) != 2 {
+		resp.Header.Get("X-Switchboard-Attempts") != "0" || len(failing.requests()) != 2 {
 		t.Errorf("%d %v %s", resp.StatusCode, resp.Header, b)
 	}
 	if x := lastExchange(t, logs); x.Status != 503 || x.Attempts != 0 || len(x.Tried) != 1 {
