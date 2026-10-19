@@ -367,8 +367,9 @@ removed); 17 of the relay and the mock's stream, 15 caught at first (comments be
 clean end without `[DONE]`, are caught now). Then a review (one agent, 21 minutes, at `b3b5e1f`) reproduced four bugs
 as failing tests, kept as `review_d2_*_test.go` (a slow client cut as the provider's timeout, which I had fixed
 meanwhile; a streamed probe holding its breaker; a `[DONE]`-only stream as an answer; the mock checking
-`stream_options` after its draw), and listed 20 one-line changes no test caught; the 15 that change behaviour fail a
-test now (`health_test.go` and others).
+`stream_options` after its draw), and listed 24 one-line changes no test caught. Each was run as a mutant here
+afterwards: 23 fail a test now (`health_test.go` and others), and one, a cleanly ended stream's verdict for its
+breaker, no longer changes anything, since a stream reports its success at its first event.
 
 ## Design decisions
 

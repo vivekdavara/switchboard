@@ -40,6 +40,8 @@ func TestEachOutcomeTellsTheBreakerWhatItShould(t *testing.T) {
 		{"a stream over the limit before its first event", stream("data: " + strings.Repeat("x", 3000) + "\n\n"),
 			"half-open"},
 		{"a stream with an error first", stream(`data: {"error":{"message":"no"}}` + "\n\n"), "open"},
+		{"a stream that ends before its first event", stream(), "open"},
+		{"a stream answered with JSON", answering(200, `{"id":"x","object":"chat.completion","choices":[]}`), "open"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var n atomic.Int32
@@ -144,5 +146,19 @@ func TestAStallBetweenOneAndTwoTimeoutsIsCaught(t *testing.T) {
 	}
 	if code := lastEventError(t, events); code != "upstream_timeout" {
 		t.Errorf("code %q", code)
+	}
+}
+
+func TestAProbeThatFindsNobodyReopensTheBreaker(t *testing.T) {
+	up := newProvider(t, answering(500, `{}`))
+	srv, g, _ := gatewayFor(t, `"circuit_breaker":{"failures":1,"cooldown":"50ms"}`, []string{at(up, "")}, "m=p0/x")
+	send(t, srv, `{"model":"m","messages":[{"role":"user","content":"x"}]}`)
+	up.Close() // the provider is gone: the probe's connection is refused
+	time.Sleep(70 * time.Millisecond)
+	if resp, b := send(t, srv, `{"model":"m","messages":[{"role":"user","content":"x"}]}`); resp.StatusCode != 502 {
+		t.Fatalf("%d %s", resp.StatusCode, b)
+	}
+	if got := g.breakers["p0"].State().String(); got != "open" {
+		t.Errorf("after an unreachable probe: %s", got)
 	}
 }

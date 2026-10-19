@@ -383,9 +383,9 @@ committing an empty 200 and a success; and the mock checking `stream_options` af
 could become an injected 500 and shifted every later fate. Its suspicions gave seven more changes (a first event
 that isn't a JSON chunk falls back; a provider's own 502, 504 and 524 count as unanswered; no budget spent once the
 client has left; pings aren't progress; broken streams log at WARN; the budget counts only requests that made an
-attempt; a misleading comment), and its list of
-one-line changes no test caught gave the tests in `health_test.go` and five more; each now fails when its line is
-broken.
+attempt; a misleading comment), and its list of 24
+one-line changes no test caught gave the tests in `health_test.go` and five more: 23 of them fail a test now, and the
+24th (a cleanly ended stream's verdict) changes nothing any more, because a stream reports at its first event.
 
 **How did you make the mock stream, and fail mid-stream, deterministically?**
 It writes OpenAI's chunks a token's time apart and `data: [DONE]` (`mock.stream`). `-cut-rate` breaks answers off;
