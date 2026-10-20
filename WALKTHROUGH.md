@@ -18,6 +18,16 @@ Then the tests named below, and the `review_*_test.go` files, each of which star
 `TestAStreamFallsBackUntilItsFirstEvent`, `TestAStreamThatBreaksAfterItsFirstEventEndsWithAnErrorEvent` and
 `TestASlowClientIsNotTheProvidersTimeout`.
 
+**Reading order for day 3:** DESIGN.md "Client keys", "Rate limits", "Caching", "Accounting" and "When Redis is
+down"; `internal/ratelimit/ratelimit.go` (the script, `Take`); `internal/gateway/clients.go` (`authenticate`,
+`rateLimit`); `internal/gateway/caching.go` (`lookup`, `serveHit`, `store`); `internal/cache/cache.go` (`Key`);
+`internal/gateway/accounting.go` (`upstreamBody`, `unasked`, `account`); `internal/openai/request.go`
+(`WithModelAskingUsage`); `internal/usage/usage.go` (`Cost`, `USD`, `Totals.Add`); `internal/config/clients.go`
+(`microdollars`). Then `TestAFractionalRateAccumulates`, `TestNoTwoRequestsTakeTheSameToken`,
+`TestARateLimitedClientGetsA429ItsSDKWaitsFor`, `TestTheLimitCountsRequestsNotAttempts`,
+`TestAStreamsUsageIsCountedWhetherOrNotTheClientAskedForIt`, `TestUsageTakenOutOfEveryChunk`,
+`TestASecondIdenticalRequestIsAnsweredFromTheCache` and `FuzzAskingForUsageKeepsTheRest`.
+
 ## The project (day 1)
 
 **What is Switchboard, in a minute?**
@@ -400,3 +410,119 @@ the decision uses the fourth random draw that day 1 reserved, so every request s
 don't move when the cut rate changes, and a higher cut rate only turns answers into cuts
 (`TestARaisedCutRateOnlyAddsCuts`).
 
+## Client keys and rate limits (day 3)
+
+**How does a client authenticate?**
+With the key it would give the OpenAI SDK: `Authorization: Bearer <key>`. The file holds only each client's SHA-256
+of its key (`key_sha256`), so the configuration can be checked in; `switchboard keygen` makes a key (32 random
+bytes) and prints it once with its hash. The gateway hashes what it's given and looks it up (`authenticate`). Wrong
+or missing is a 401 in OpenAI's shape, which the SDK raises as `AuthenticationError`, and so is any path that doesn't
+exist, so a caller without a key can't map what's served. The key is never logged and never goes upstream.
+
+**SHA-256, not bcrypt?**
+bcrypt is slow on purpose, to protect passwords a person chose, which are guessable. A key here is 256 random bits:
+nobody can guess it, fast hash or slow, and a slow hash would cost every request milliseconds. A fast hash of a
+random key is the usual way to store issued API keys.
+
+**Walk me through the rate limiter.**
+A token bucket per client: `burst` requests at once, refilled at `requests_per_minute`. It lives in Redis so every
+gateway shares it, and one Lua script reads and updates it (`internal/ratelimit`), so it's atomic: from Go, a GET and
+a SET would let two gateways both see the last token and both take it. `TestNoTwoRequestsTakeTheSameToken` sends 200
+requests at once at a burst of 50, and exactly 50 pass.
+
+**What's GCRA, and why use it for a token bucket?**
+The same limit, stored differently. Instead of "tokens left, counted at time t", it stores one time: when the bucket
+will be full again. Each request allowed pushes that time one interval (60 s / rate) later; a request is allowed if,
+pushed, it's at most `burst` intervals ahead of now. I came to it from a bug: my first version stored tokens as a
+fraction and added a fraction per call, and `TestAFractionalRateAccumulates` (0.5 a minute, checked every second)
+found 120 refills of 1/120 adding up to less than one token, so a request due at exactly that moment was refused
+(and told to retry in 1 ms). A time in whole microseconds has nothing to add up.
+
+**Whose clock does the limiter use?**
+Redis's (`TIME`, inside the script). Gateways on several machines disagree about the time by milliseconds or more;
+one clock in the one place the bucket lives can't disagree with itself. Tests pass their own clock instead.
+
+**Does a fallback count against the client's limit?**
+No. The limit counts the client's requests; the gateway's retries are the gateway's cost, and day 2's budget bounds
+those. `TestTheLimitCountsRequestsNotAttempts`: two requests that each needed two attempts leave a burst of 2 empty,
+not overdrawn. A cache hit does count: it is a request.
+
+**Why check the limit before reading the body?**
+So a refused request costs one Redis round trip and nothing more: not reading up to 4 MiB, not parsing it.
+`TestARefusedRequestsBodyIsNeverRead` sends a refused request over the size limit and gets 429, not 413.
+
+**What does a client see when it's limited?**
+429 `rate_limit_exceeded` with `Retry-After` (seconds) and `retry-after-ms`, plus OpenAI's
+`x-ratelimit-{limit,remaining,reset}-requests` on every answer. The OpenAI SDKs read `retry-after-ms` and wait that
+long before their own retry: in the demo, carol (a burst of 1) sends two requests through the SDK and the second is
+answered 1.02 s later, with no retry code of hers.
+
+**And when Redis is down?**
+Every command has a timeout (100 ms by default), no retries and one dial attempt. A rate-limited request then goes on
+unlimited, logged as `rate_limit: unavailable` (or gets a 503 with `on_error: refuse`). The default is to allow: the
+limit protects the providers' budget, and an outage of Redis shouldn't become an outage of the gateway. Tests point
+the gateway at a closed port and at a listener that never answers (`TestARedisThatNeverAnswersCostsAtMostItsTimeout`).
+
+## Caching (day 3)
+
+**What's in the cache key?**
+The SHA-256 of a version, the scope (the client, or `*` for a shared cache), the model's own name (so an alias shares
+its model's entries) and the request body with that name as its model, compacted. Whitespace doesn't matter; any
+other difference, even key order, is another entry. That errs on one side only: a miss costs a provider call, a
+wrong hit gives someone another request's answer. The parts are separated by NUL bytes, so `alic` + `efast` isn't
+`alice` + `fast`.
+
+**Why per client by default?**
+A hit tells a client that someone sent exactly that request recently. Between tenants that's a leak (did anyone ask
+about X?), so a cache is the client's own unless the model says `shared`.
+
+**What's never cached?**
+Anything but an answer: errors, 400s, broken streams (day 2's rule), answers over 1 MiB. A stream is kept only once
+its `[DONE]` has arrived, as the bytes the client got, and replayed all at once. A hit is no attempt: no budget, no
+breaker; `X-Switchboard-Attempts: 0` and the original's bytes, `id` included.
+
+**How does a client get a fresh answer?**
+`Cache-Control: no-cache` skips the lookup and keeps the new answer; `no-store` skips both
+(`TestAClientCanAskForAFreshAnswer`).
+
+**Isn't caching wrong with temperature above 0?**
+For a model whose answers should vary, yes, and that's why caching is per model and off by default. It suits
+deterministic calls (temperature 0, classification, extraction, evals run twice).
+
+## Accounting (day 3)
+
+**Where do the token counts come from?**
+The provider's own `usage` object: that's what it bills. The gateway has no tokenizer for every provider, and an
+estimate would be wrong in both directions. A plain answer always has one.
+
+**And a stream, whose usage comes only if the client asked for it?**
+The gateway asks on the client's behalf: it sets `stream_options.include_usage: true` upstream (merged into the
+client's own `stream_options`; `FuzzAskingForUsageKeepsTheRest` checks that nothing else changes), reads the usage as
+the chunks pass, and takes it out again (`unasked`): the usage-only last chunk is dropped, and the `"usage": null`
+that OpenAI then puts on every chunk is removed. Everything else goes byte for byte, and
+`TestAStreamsUsageIsCountedWhetherOrNotTheClientAskedForIt` compares the client's stream with the mock's own stream
+for the request as the client sent it, event for event. A provider that refuses `stream_options` gets
+`stream_usage: false`.
+
+**Why did asking for usage make you refuse `Include_Usage`?**
+Day 1's rule: the gateway refuses keys equal to one it reads only when case is ignored, because a Go provider fills
+`include_usage` from `Include_Usage` too. If a client sent `{"Include_Usage": true}`, the gateway would think it
+hadn't asked, add `include_usage`, and strip the usage the client had in fact asked for.
+
+**How do you represent money?**
+Whole picodollars in an int64. A price is dollars per million tokens, a plain decimal of at most six places,
+converted exactly (string arithmetic, no float) to microdollars per million tokens, which is the same number as
+picodollars per token: $0.15 per million is 150,000. A cost is two multiplications and an addition. The config caps
+prices at $1,000 per million and the gateway believes at most a billion tokens, so each product is at most 10^18 and
+the sum fits under 9.2 × 10^18.
+
+**Where do the totals go, and when?**
+A hash per UTC day, client and model in Redis, incremented in one MULTI (so a report never sees half a request),
+kept 90 days; `switchboard usage` prints a day. They're written before the handler returns, which costs the client a
+Redis round trip but lets each request's log line say whether its totals were written. Batching them in the
+background is the obvious next step if day 4's load test says the round trip matters.
+
+**What isn't counted?**
+Errors, broken streams (the provider may still bill the tokens it sent; the log line records the break), and
+attempts that went unanswered before a fallback, which may have cost something nobody can know. The log lines are
+the record to reconcile against a provider's invoice.
