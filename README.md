@@ -416,8 +416,8 @@ python3 scripts/bench_medians.py < run/bench-day3.txt
 - The same run's day-1 overhead (`BenchmarkOverhead`): 87 µs through the gateway against 40 µs straight to the mock
   for the small request (47 µs added; 42 on day 1, 44 on day 2), 175 against 87 µs for the 4 KB one.
 - The OpenAI Python SDK and the 429 (the demo): carol, with a burst of 1 at 60 a minute, sends two requests at once;
-  the second is answered 1.02 s later, the SDK having read `retry-after-ms` and retried by itself (two demo runs,
-  1.02 s both times).
+  the second is answered 1.02 s later, the SDK having read `retry-after-ms` and retried by itself (1.02, 1.02 and
+  1.01 s in three demo runs).
 
 ## Configuration
 
@@ -496,9 +496,11 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (156 test and fuzz functions, about 20 s;
-coverage 96.4% across packages with `go test -coverpkg=./...`);
-CI runs the same on Ubuntu 24.04, then `make demo`'s script with the SDK checks as a second job.
+`make check` runs gofmt, `go vet` and `go test -race` over every package (228 test and fuzz functions, 156 of them
+before day 3; about 21 s, with the test Redis on 6382 started if none answers; coverage 96.7% across packages with
+`go test -coverpkg=./...`, and on their own: gateway 98.0%, config 99.2%, usage 95.7%, ratelimit 92.3%, cache 87.5%
+(its misses are errors `json.Compact` and `json.Marshal` can't return there). CI runs the same on Ubuntu 24.04 with
+Redis 8 as a service container, then `make demo`'s script with the SDK checks (and its own Redis) as a second job.
 
 | Package | What the tests pin down |
 |---|---|
