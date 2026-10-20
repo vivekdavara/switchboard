@@ -32,6 +32,7 @@ import (
 	"github.com/vivekdavara/switchboard/internal/openai"
 	"github.com/vivekdavara/switchboard/internal/ratelimit"
 	"github.com/vivekdavara/switchboard/internal/route"
+	"github.com/vivekdavara/switchboard/internal/usage"
 )
 
 // ErrShutdown is the cause the server's base context is cancelled with when the shutdown grace runs out. A request
@@ -63,6 +64,7 @@ type Gateway struct {
 
 	rdb     *redis.Client // nil when the file names no Redis
 	limiter *ratelimit.Limiter
+	totals  *usage.Totals
 }
 
 // New makes a gateway for cfg, forwarding through transport (NewTransport's if nil) and logging to log. It isn't
@@ -92,6 +94,7 @@ func New(cfg *config.Config, transport http.RoundTripper, log *slog.Logger) *Gat
 		redis.SetLogger(quiet{})
 		g.rdb = NewRedis(cfg.Redis)
 		g.limiter = ratelimit.New(g.rdb, cfg.Redis.Prefix)
+		g.totals = usage.NewTotals(g.rdb, cfg.Redis.Prefix)
 	}
 	g.mux.HandleFunc("POST /v1/chat/completions", g.chat)
 	g.mux.HandleFunc("GET /v1/models", g.models)
@@ -225,6 +228,13 @@ type exchange struct {
 	client          string       // the client's name, when the file names clients
 	rateLimit       string       // "refused", or "unavailable" when Redis couldn't say
 	redisErr        error        // why Redis couldn't, for the log only
+	route           string       // the model's own name (x.model is what the client sent: maybe an alias)
+	stripUsage      bool         // this attempt asked for a stream's usage the client didn't ask for
+	usage           usage.Usage  // the completion's tokens, if hasUsage
+	hasUsage        bool
+	cost            int64 // picodollars, if priced
+	priced          bool
+	totalsErr       error // why the totals couldn't be added to, for the log only
 }
 
 func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
@@ -306,6 +316,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			"the model %q is not served here; GET /v1/models lists the ones that are", req.Model), nil)
 		return
 	}
+	x.route = model.Name
 
 	// 6 to 8, once per target until one answers: rewrite, forward, answer. DESIGN.md, "Fallback".
 	var last *result
@@ -346,7 +357,9 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			x.budgetSpent = true
 			break
 		}
-		res := g.try(w, r, x, t, req.WithModel(t.UpstreamModel), req.Stream, len(x.attempts)+1, ticket)
+		body, strip := upstreamBody(req, t)
+		x.stripUsage = strip
+		res := g.try(w, r, x, t, body, req.Stream, len(x.attempts)+1, ticket)
 		switch res.health {
 		case healthy:
 			ticket.Success()
@@ -366,6 +379,7 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			if res.err != nil {
 				panic(http.ErrAbortHandler) // so no client can take the stream for a complete one
 			}
+			g.account(r, x, nil)
 			return
 		}
 		last = &res
@@ -396,6 +410,11 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.pass(w, x, last.status, last.body, last.header)
+	if last.status == http.StatusOK {
+		// Before the handler returns: an answer that fits net/http's buffer (a few KB) leaves only then, so this costs
+		// the client a Redis round trip, and in return the log line can say whether the totals were written.
+		g.account(r, x, last.body)
+	}
 }
 
 // What an attempt's answer means for the request.
@@ -647,6 +666,16 @@ func (g *Gateway) logExchange(x *exchange) {
 	}
 	if x.provider != "" {
 		attrs = append(attrs, slog.String("provider", x.provider), slog.String("upstream_model", x.upstreamModel))
+	}
+	if x.hasUsage {
+		attrs = append(attrs, slog.Int64("prompt_tokens", x.usage.Prompt),
+			slog.Int64("completion_tokens", x.usage.Completion))
+	}
+	if x.priced {
+		attrs = append(attrs, slog.String("cost_usd", usage.USD(x.cost)))
+	}
+	if x.totalsErr != nil {
+		attrs = append(attrs, slog.String("totals_err", x.totalsErr.Error()))
 	}
 	if x.upstreamSent {
 		attrs = append(attrs, slog.Int("upstream_status", x.upstreamStatus),

@@ -16,6 +16,7 @@ import (
 	"github.com/vivekdavara/switchboard/internal/breaker"
 	"github.com/vivekdavara/switchboard/internal/config"
 	"github.com/vivekdavara/switchboard/internal/openai"
+	"github.com/vivekdavara/switchboard/internal/usage"
 )
 
 // Streaming (DESIGN.md, "Streaming"). A streamed answer can't be held until it is complete, and once its 200 and its
@@ -207,12 +208,28 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 		x.responseBytes += len(b)
 		return rc.Flush() == nil
 	}
-	for _, b := range append(pending, first.raw) {
+	// Each data event's usage is read as it passes; if the gateway asked for the usage the client didn't, it is
+	// taken out again (unasked).
+	out := func(ev sseEvent) []byte {
+		if u, ok := usage.FromChunk(ev.data); ok {
+			x.usage, x.hasUsage = u, true
+		}
+		if x.stripUsage {
+			return unasked(ev)
+		}
+		return ev.raw
+	}
+	for _, b := range pending {
 		if !send(b) {
 			return result{written: true, gone: true, cause: errClientWrite}
 		}
 	}
-	x.events = 1
+	if b := out(first); b != nil {
+		if !send(b) {
+			return result{written: true, gone: true, cause: errClientWrite}
+		}
+		x.events = 1
+	}
 	// Only a data event is progress: the time spent waiting through comments (pings) is kept, so a provider that
 	// sends pings and nothing else still times out (before, a ping restarted the whole timeout; a suspicion of the
 	// day-2 review).
@@ -231,7 +248,11 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 		} else {
 			remaining -= time.Since(waited)
 		}
-		if !send(ev.raw) {
+		b := out(ev)
+		if b == nil {
+			continue
+		}
+		if !send(b) {
 			return result{written: true, gone: true, cause: errClientWrite}
 		}
 		if ev.data != nil && !ev.done() {
