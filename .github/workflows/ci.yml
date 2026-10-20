@@ -48,10 +48,21 @@ jobs:
         run: go test -run '^$' -bench . -benchtime 50x ./internal/gateway ./internal/openai ./internal/route ./internal/budget ./internal/breaker
 
   smoke:
-    # The real binaries on their real ports: scripts/demo.sh starts two mock providers and the gateway, checks eight
-    # requests' answers with curl and eight with the official OpenAI Python SDK, and fails if any differs.
+    # The real binaries on their real ports: scripts/demo.sh starts two mock providers and the gateway, checks the
+    # answers with curl and with the official OpenAI Python SDK, and fails if any differs. Day 3's part runs against
+    # this Redis, on the port the demo uses here (6382).
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    services:
+      redis:
+        image: redis:8
+        ports:
+          - 6382:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

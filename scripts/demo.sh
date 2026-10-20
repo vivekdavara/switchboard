@@ -3,6 +3,10 @@
 # requests through the gateway, checks each answer, and stops everything. CI runs it as a smoke test; `make demo`
 # runs it here. Logs go to run/ (gitignored). Needs curl.
 #
+# Day 3's part runs the gateway again with client keys made for this run (run/day3.json, never checked in), a rate
+# limit, a cache and prices, against the Redis on 127.0.0.1:6382: the one already running there (CI's service
+# container, or make test's), or one it starts itself (redis-server) and stops at the end.
+#
 # With the official OpenAI Python SDK it also runs scripts/sdk_check.py: set SDK_PYTHON to a Python that has
 # scripts/requirements-sdk.txt installed (CI does), or have it in .venv (python3.11 -m venv .venv &&
 # .venv/bin/pip install -r scripts/requirements-sdk.txt).
@@ -10,14 +14,22 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 GATEWAY=http://127.0.0.1:8108
+REDIS_PORT=6382
 mkdir -p run bin
 go build -o bin/ ./cmd/...
 
 pids=()
+started_redis=
+prefix="switchboard-demo-$(date +%s)-$$:"
 cleanup() {
   # Every step may fail here (a process already gone); none may stop the rest.
   for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+  if command -v redis-cli >/dev/null; then
+    redis-cli -p "$REDIS_PORT" --scan --pattern "$prefix*" 2>/dev/null |
+      xargs -n 100 redis-cli -p "$REDIS_PORT" del >/dev/null 2>&1 || true
+  fi
+  if [[ -n $started_redis ]]; then redis-cli -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
 
@@ -111,6 +123,78 @@ fi
 echo
 echo "The gateway's log (run/switchboard.log), one line per request:"
 grep '"chat completion"' run/switchboard.log | sed 's/^{"time":"[^"]*",//' | cut -c1-200
+
+# Day 3: client keys, a rate limit, a cache, accounting. The gateway again, with keys made for this run.
+echo
+kill "${pids[2]}"
+wait "${pids[2]}" 2>/dev/null || true
+if ! (exec 3<>"/dev/tcp/127.0.0.1/$REDIS_PORT") 2>/dev/null; then
+  redis-server --port "$REDIS_PORT" --bind 127.0.0.1 --daemonize yes --save "" --appendonly no --dir "$PWD/run" \
+    --logfile "$PWD/run/redis.log"
+  started_redis=1
+  for _ in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$REDIS_PORT") 2>/dev/null && break; sleep 0.1; done
+fi
+newkey() { # newkey NAME: sets NAME_key and NAME_hash
+  local out
+  out=$(bin/switchboard keygen)
+  printf -v "$1_key" '%s' "$(awk '$1 == "key" { print $2 }' <<<"$out")"
+  printf -v "$1_hash" '%s' "$(awk '$1 == "key_sha256" { print $2 }' <<<"$out")"
+}
+newkey alice
+newkey bob
+newkey carol
+cat >run/day3.json <<JSON
+{
+  "listen": "127.0.0.1:8108",
+  "redis": {"addr": "127.0.0.1:$REDIS_PORT", "prefix": "$prefix"},
+  "clients": [
+    {"name": "alice", "key_sha256": "$alice_hash", "rate_limit": {"requests_per_minute": 60, "burst": 2}},
+    {"name": "bob", "key_sha256": "$bob_hash"},
+    {"name": "carol", "key_sha256": "$carol_hash", "rate_limit": {"requests_per_minute": 60, "burst": 1}}
+  ],
+  "providers": [{"name": "mock-a", "base_url": "http://127.0.0.1:8118/v1", "timeout": "10s"}],
+  "models": [
+    {"name": "fast", "provider": "mock-a", "upstream_model": "mock-small", "cache": {"ttl": "1m"}},
+    {"name": "plain", "provider": "mock-a", "upstream_model": "mock-small"}
+  ],
+  "prices": [
+    {"provider": "mock-a", "upstream_model": "mock-small", "input_per_million": 0.15, "output_per_million": 0.6}
+  ]
+}
+JSON
+bin/switchboard serve -config run/day3.json 2>run/switchboard-day3.log &
+pids+=($!)
+for _ in $(seq 100); do curl -sf "$GATEWAY/readyz" >/dev/null 2>&1 && break; sleep 0.1; done
+
+as() { printf '%s\0' -H "Authorization: Bearer $1"; }
+mapfile -d '' args < <(chat "$(ask fast)")
+check "no key"                      401 '"code":"missing_api_key"' "${args[@]}"
+mapfile -d '' auth < <(as "sb-not-a-key")
+check "a key it doesn't know"       401 '"code":"invalid_api_key"' "${auth[@]}" "${args[@]}"
+mapfile -d '' auth < <(as "$alice_key")
+check "alice"                       200 'This is mock-a answering' -D run/headers "${auth[@]}" "${args[@]}"
+grep -qi '^x-ratelimit-remaining-requests: 1' run/headers || { echo "FAIL  alice's remaining requests"; failures=$((failures + 1)); }
+check "alice again, from the cache" 200 'This is mock-a answering' "${auth[@]}" "${args[@]}"
+check "alice's third: over her limit" 429 '"code":"rate_limit_exceeded"' -D run/headers "${auth[@]}" "${args[@]}"
+grep -qi '^retry-after: 1' run/headers || { echo "FAIL  alice's Retry-After"; failures=$((failures + 1)); }
+mapfile -d '' auth < <(as "$bob_key")
+mapfile -d '' args < <(chat "$(ask fast ',"max_tokens":7')")
+check "bob, a miss"                 200 '"completion_tokens":7' -D run/headers "${auth[@]}" "${args[@]}"
+grep -qi '^x-switchboard-cache: miss' run/headers || { echo "FAIL  bob's miss"; failures=$((failures + 1)); }
+check "bob again, a hit"            200 '"completion_tokens":7' -D run/headers "${auth[@]}" "${args[@]}"
+grep -qi '^x-switchboard-cache: hit' run/headers || { echo "FAIL  bob's hit"; failures=$((failures + 1)); }
+mapfile -d '' args < <(chat "$(ask plain ',"stream":true')")
+check "a stream, usage not asked"   200 'data: [DONE]' -N "${auth[@]}" "${args[@]}"
+if grep -qF '"usage"' run/body; then echo "FAIL  the stream had a usage the client didn't ask for"; failures=$((failures + 1)); fi
+if [[ -n $sdk_python ]]; then
+  SB_KEY_CAROL=$carol_key "$sdk_python" scripts/sdk_check.py day3 || failures=$((failures + 1))
+fi
+echo
+bin/switchboard usage -config run/day3.json | tee run/usage.txt
+grep -qE '^ +bob +fast +1 +1 ' run/usage.txt || { echo "FAIL  bob's totals"; failures=$((failures + 1)); }
+echo
+echo "The day-3 gateway's log (run/switchboard-day3.log):"
+grep '"chat completion"' run/switchboard-day3.log | sed 's/^{"time":"[^"]*",//' | cut -c1-200
 if ((failures > 0)); then
   echo "$failures checks failed"
   exit 1
