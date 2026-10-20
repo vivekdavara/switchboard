@@ -628,6 +628,10 @@ As built on day 3:
   unless shared, only answers kept, no-cache and no-store, a stream's hit event for event, a broken stream not kept,
   Redis down.
 - The demo runs day 3 with keys made for the run, and checks the OpenAI SDK waiting out a 429 by itself.
+- After the review: streams with the provider's error event in them, `"usage": null` chunks without choices, events
+  with `id:` and `event:` lines, a usage chunk first, stops during each Redis step against a Redis that never answers,
+  and `FuzzUnaskedsFastPathAgreesWithTheParse` (the fast path's cut against the parse). The review's 14 one-line
+  survivors were each run as a mutant afterwards: 13 fail a test now, and the 14th went with the field it touched.
 
 ## Decisions and alternatives
 
