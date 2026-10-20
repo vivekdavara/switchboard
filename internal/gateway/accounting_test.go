@@ -1,15 +1,18 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/vivekdavara/switchboard/internal/jsonstrict"
 	"github.com/vivekdavara/switchboard/internal/redistest"
 	"github.com/vivekdavara/switchboard/internal/usage"
 )
@@ -324,4 +327,60 @@ func TestAStopEndsATotalsWriteToARedisThatNeverAnswers(t *testing.T) {
 	if l := logLines(t, logs, "chat completion")[0]; l["totals_err"] == nil {
 		t.Errorf("log: %v", l)
 	}
+}
+
+// FuzzUnaskedsFastPathAgreesWithTheParse checks unasked's fast path (OpenAI's ,"usage":null} cut out of the bytes)
+// against the parse it saves: whenever it applies to a chunk the parse accepts, both give one data line, and the two
+// chunks decode to the same value, with no usage in it.
+func FuzzUnaskedsFastPathAgreesWithTheParse(f *testing.F) {
+	for _, s := range []string{
+		`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,` +
+			`"delta":{"content":" word"},"logprobs":null,"finish_reason":null}],"usage":null}`,
+		`{"choices":[],"usage":null}`,
+		`{"usage":null}`,
+		`{"a":"\",\"usage\":null}","usage":null}`,
+		`{"a":{"b":1,"usage":null},"usage":null}`,
+		`{"usage":{"x":1},"usage":null}`,
+		`{"a": 1 ,"usage":null}`,
+		`{"choices":[{"delta":{"content":"usage"}}],"x":"y","usage":null}`,
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if bytes.ContainsAny(data, "\r\n") {
+			return // one data line
+		}
+		ev := sseEvent{data: data, raw: append(append([]byte("data: "), data...), "\n\n"...)}
+		fast, ok := unaskedNull(ev)
+		if !ok {
+			return
+		}
+		if _, err := jsonstrict.ParseObject(data); err != nil {
+			return // the parse leaves what it can't read as it came; the fast path's cut is still exact
+		}
+		slow := unaskedParsed(ev)
+		if slow == nil {
+			t.Fatalf("the parse drops %q, the fast path keeps it", data)
+		}
+		decode := func(event []byte) any {
+			line, ok := bytes.CutPrefix(event, []byte("data: "))
+			line, ok2 := bytes.CutSuffix(line, []byte("\n\n"))
+			if !ok || !ok2 || bytes.ContainsAny(line, "\r\n") {
+				t.Fatalf("not one data line: %q", event)
+			}
+			var v any
+			d := json.NewDecoder(bytes.NewReader(line))
+			d.UseNumber()
+			if err := d.Decode(&v); err != nil {
+				t.Fatalf("%q: %v", line, err)
+			}
+			if m, isObject := v.(map[string]any); !isObject || m["usage"] != nil {
+				t.Fatalf("usage left in, or not an object: %q", line)
+			}
+			return v
+		}
+		if a, b := decode(fast), decode(slow); !reflect.DeepEqual(a, b) {
+			t.Fatalf("for %q the fast path gives %q, the parse %q", data, fast, slow)
+		}
+	})
 }

@@ -38,6 +38,7 @@ fuzz:
 	go test -run '^$$' -fuzz FuzzRewriteKeepsTheMeaning -fuzztime 60s ./internal/openai
 	go test -run '^$$' -fuzz FuzzAskingForUsageKeepsTheRest -fuzztime 60s ./internal/openai
 	go test -run '^$$' -fuzz FuzzEventReaderAgreesWithTheReference -fuzztime 60s ./internal/gateway
+	go test -run '^$$' -fuzz FuzzUnaskedsFastPathAgreesWithTheParse -fuzztime 60s ./internal/gateway
 
 # The real binaries: two mock providers and the gateway on 8108/8118/8119, eight requests checked (CI's smoke job).
 demo:

@@ -42,6 +42,37 @@ func unasked(ev sseEvent) []byte {
 	if ev.data == nil || !bytes.Contains(ev.data, []byte(`"usage"`)) {
 		return ev.raw
 	}
+	if b, ok := unaskedNull(ev); ok {
+		return b
+	}
+	return unaskedParsed(ev)
+}
+
+// usageNull ends every chunk OpenAI sends once the usage is asked for: its last member.
+var usageNull = []byte(`,"usage":null}`)
+
+// unaskedNull is unasked's fast path, for OpenAI's own shape: an event of one data line whose chunk ends with
+// "usage": null as its last member, and has no other usage key. In valid JSON those last bytes can only be the
+// top-level object's last member (a string can't hold an unescaped quote), so cutting them out removes that member
+// and nothing else, without parsing the chunk: 2.73 µs and 76 allocations a chunk became 0.41 µs and one (README
+// "Results (day 3)"). FuzzUnaskedsFastPathAgreesWithTheParse checks it against unaskedParsed.
+func unaskedNull(ev sseEvent) ([]byte, bool) {
+	d := ev.data
+	if !bytes.HasSuffix(d, usageNull) || len(ev.raw) != len("data: ")+len(d)+2 ||
+		!bytes.HasPrefix(ev.raw, []byte("data: ")) || !bytes.HasSuffix(ev.raw, []byte("\n\n")) {
+		return nil, false
+	}
+	rest := d[:len(d)-len(usageNull)]
+	if bytes.Contains(rest, []byte(`"usage"`)) || !json.Valid(d) {
+		return nil, false
+	}
+	b := make([]byte, 0, len(ev.raw)-len(usageNull)+1)
+	b = append(append(append(append(b, "data: "...), rest...), '}'), "\n\n"...)
+	return b, true
+}
+
+// unaskedParsed is unasked for any chunk: parsed, the usage member taken out, written again.
+func unaskedParsed(ev sseEvent) []byte {
 	members, err := jsonstrict.ParseObject(ev.data)
 	if err != nil {
 		return ev.raw

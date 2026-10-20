@@ -406,8 +406,13 @@ python3 scripts/bench_medians.py < run/bench-day3.txt
   token and 5 ms a token, about 360 ms for 32 tokens) or any real model, the hit is three orders of magnitude faster;
   next to this benchmark's no-latency mock it is slower, because it makes two round trips where the mock makes none.
 - Taking the usage out of a chunk (`BenchmarkUnasked`, OpenAI's `"usage": null` on a 178-byte chunk): 2.73 µs [2.73,
-  2.74] and 76 allocations; a chunk with no usage in it passes in 0.10 µs. A 34-event stream whose client didn't ask
-  for usage pays about 93 µs of CPU for it, spread over the stream.
+  2.74] and 76 allocations by parsing the chunk and writing it again, so a 34-event stream whose client didn't ask
+  for usage paid about 93 µs of CPU, 15 times day 2's whole relay (6 µs). A fast path for OpenAI's own shape (the
+  chunk ends with `,"usage":null}`, cut out of the bytes after `json.Valid`) made it 414 ns [414, 431] and 1
+  allocation (`run/bench-day3-unasked-fast.txt`, at the commit after `9b62641`, 16:28; the 1-minute load average was
+  22.9 from a fuzz run just ended, but the unchanged case, 103.7 ns against 103.4, says the run itself was quiet).
+  A chunk with no usage in it passes in 0.10 µs. `FuzzUnaskedsFastPathAgreesWithTheParse` checks the cut against the
+  parse: 3,146,813 inputs in 46 s, no difference.
 - The same run's day-1 overhead (`BenchmarkOverhead`): 87 µs through the gateway against 40 µs straight to the mock
   for the small request (47 µs added; 42 on day 1, 44 on day 2), 175 against 87 µs for the 4 KB one.
 - The OpenAI Python SDK and the 429 (the demo): carol, with a burst of 1 at 60 a minute, sends two requests at once;
