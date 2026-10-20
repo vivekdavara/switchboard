@@ -507,6 +507,9 @@ func (g *Gateway) try(w http.ResponseWriter, r *http.Request, x *exchange, t con
 	p := t.Provider
 	x.provider, x.upstreamModel = p.Name, t.UpstreamModel
 	x.upstreamSent, x.upstreamStatus = true, 0
+	// The usage is this attempt's: one read from a stream that then failed before its first chunk isn't the next
+	// attempt's (found in the day-3 second review).
+	x.usage, x.hasUsage = usage.Usage{}, false
 	entry := attemptLog{Provider: p.Name, UpstreamModel: t.UpstreamModel}
 	sent := time.Now()
 	defer func() {

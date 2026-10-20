@@ -33,7 +33,7 @@ func upstreamBody(req *openai.ChatRequest, t config.Target) (body []byte, strip 
 
 // unasked is what to send in place of a stream's event when the gateway asked for the usage the client didn't: that
 // usage taken out, and nothing else. A chunk that carries a usage object and no choices (OpenAI's last chunk, which a
-// client that didn't ask never gets) is dropped (nil). A usage member on any other chunk (the "usage": null OpenAI
+// client that didn't ask never gets), and isn't an error, is dropped (nil). A usage member on any other chunk (the "usage": null OpenAI
 // puts on every chunk when asked, or a usage that comes with the last choices) is removed: the event's data line is
 // written again without it, its other lines (id:, event:, comments) as they were. Every other event goes as it came,
 // byte for byte. (The first version dropped every chunk with a usage member and no choices, even "usage": null, which
@@ -79,7 +79,7 @@ func unaskedParsed(ev sseEvent) []byte {
 	}
 	var kept []jsonstrict.Member
 	var usage json.RawMessage
-	choices := false
+	choices, isError := false, false
 	for _, m := range members {
 		switch m.Key {
 		case "usage":
@@ -88,13 +88,18 @@ func unaskedParsed(ev sseEvent) []byte {
 		case "choices":
 			var list []json.RawMessage
 			choices = json.Unmarshal(m.Value, &list) != nil || len(list) > 0
+		case "error":
+			isError = !bytes.Equal(m.Value, []byte("null"))
 		}
 		kept = append(kept, m)
 	}
 	switch {
 	case usage == nil:
 		return ev.raw
-	case !choices && !bytes.Equal(usage, []byte("null")):
+	case !choices && !isError && !bytes.Equal(usage, []byte("null")):
+		// The usage chunk. An error that carries a usage is still the provider's error: it loses only the usage (it
+		// was dropped whole, so the client never saw the error, and as a first event it read as no answer at all;
+		// found in the day-3 second review).
 		return nil
 	}
 	var obj bytes.Buffer
