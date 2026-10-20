@@ -1,5 +1,5 @@
 // Package cache keeps answers in Redis, for models whose configuration asks (DESIGN.md, "Caching"). An entry is the
-// answer exactly as a client got it (a completion's body, or a stream's bytes), under a key that is the SHA-256 of
+// answer exactly as a client got it (a completion's body, or a stream's bytes) and whose answer it is, under a key that is the SHA-256 of
 // everything that decides the answer: the scope (the client, or every client for a shared cache), the model's own
 // name (so an alias and its model share entries) and the request's body with that name in it, compacted (so
 // whitespace doesn't matter; any other difference, the order of keys included, is another entry, which is safe: a
@@ -16,8 +16,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"github.com/vivekdavara/switchboard/internal/usage"
 )
 
 // MaxEntryBytes bounds an entry: a larger answer isn't kept.
@@ -48,12 +46,11 @@ func Key(scope, model string, body []byte) string {
 
 // Entry is one cached answer.
 type Entry struct {
-	Provider      string       `json:"provider"` // whose answer it is
-	UpstreamModel string       `json:"upstream_model"`
-	Stream        bool         `json:"stream"`
-	Events        int          `json:"events,omitempty"` // a stream's data events
-	Usage         *usage.Usage `json:"usage,omitempty"`  // what the answer cost to make, if known
-	Body          []byte       `json:"-"`                // the completion, or the stream's bytes
+	Provider      string `json:"provider"` // whose answer it is
+	UpstreamModel string `json:"upstream_model"`
+	Stream        bool   `json:"stream"`
+	Events        int    `json:"events,omitempty"` // a stream's data events
+	Body          []byte `json:"-"`                // the completion, or the stream's bytes
 }
 
 // Cache is the answers in Redis.

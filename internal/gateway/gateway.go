@@ -398,6 +398,9 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 			if res.err != nil {
 				panic(http.ErrAbortHandler) // so no client can take the stream for a complete one
 			}
+			if x.code != "" { // it ended with [DONE], but the provider's error event came before
+				return
+			}
 			g.account(r, x, nil)
 			if cacheKey != "" && x.keep.b != nil {
 				g.store(r, x, cacheKey, model.Cache.TTL, x.keep.b.Bytes())

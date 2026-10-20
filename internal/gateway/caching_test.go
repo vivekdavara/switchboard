@@ -234,3 +234,17 @@ func TestKeepingAStreamStopsAtTheLimit(t *testing.T) {
 		t.Error("kept again")
 	}
 }
+
+func TestA200ThatIsAnErrorIsntKept(t *testing.T) {
+	redis, _ := redisTotals(t)
+	up := newProvider(t, answering(200, `{"error":{"message":"overloaded","type":"server_error"}}`))
+	srv, _, _ := gatewayFor(t, redis, []string{at(up, "")}, `{"name":"fast","provider":"p0","cache":{"ttl":"1m"}}`)
+	for range 2 {
+		if resp, _ := send(t, srv, ask); resp.StatusCode != 200 || resp.Header.Get("X-Switchboard-Cache") != "miss" {
+			t.Errorf("%d %s", resp.StatusCode, resp.Header.Get("X-Switchboard-Cache"))
+		}
+	}
+	if n := len(up.requests()); n != 2 {
+		t.Errorf("the provider was asked %d times", n)
+	}
+}

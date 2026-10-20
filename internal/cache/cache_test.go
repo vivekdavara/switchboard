@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/vivekdavara/switchboard/internal/redistest"
-	"github.com/vivekdavara/switchboard/internal/usage"
 )
 
 func TestTheKeyIsEverythingThatDecidesTheAnswer(t *testing.T) {
@@ -45,7 +44,7 @@ func TestAnEntryComesBackAsItWent(t *testing.T) {
 	}
 	stream := []byte(": ping\n\ndata: {\"choices\":[]}\n\ndata: [DONE]\n\n")
 	for _, e := range []Entry{
-		{Provider: "p0", UpstreamModel: "m", Body: []byte(`{"id":"x"}`), Usage: &usage.Usage{Prompt: 1, Completion: 2}},
+		{Provider: "p0", UpstreamModel: "m", Body: []byte(`{"id":"x"}`)},
 		{Provider: "p1", UpstreamModel: "m/2", Stream: true, Events: 1, Body: stream},
 		{Provider: "p2", UpstreamModel: "m", Body: []byte("{}\n\n\x00\xff")}, // bytes, whatever they are
 	} {
@@ -54,8 +53,7 @@ func TestAnEntryComesBackAsItWent(t *testing.T) {
 		}
 		got, ok, err := c.Get(ctx, e.Provider)
 		if !ok || err != nil || got.Provider != e.Provider || got.UpstreamModel != e.UpstreamModel ||
-			got.Stream != e.Stream || got.Events != e.Events || !bytes.Equal(got.Body, e.Body) ||
-			(e.Usage != nil) != (got.Usage != nil) || (e.Usage != nil && *got.Usage != *e.Usage) {
+			got.Stream != e.Stream || got.Events != e.Events || !bytes.Equal(got.Body, e.Body) {
 			t.Errorf("%+v came back as %+v (%v %v)", e, got, ok, err)
 		}
 	}

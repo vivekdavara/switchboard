@@ -258,6 +258,15 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 		} else {
 			remaining -= time.Since(waited)
 		}
+		if ev.data != nil && !ev.done() && x.code == "" && bytes.Contains(ev.data, []byte(`"error"`)) {
+			if msg, isError := streamError(ev.data); isError {
+				// The provider's own error, mid-stream (vLLM sends one, then [DONE], when its engine fails). The client
+				// gets it as it came, and the SDK raises it; but the stream is no answer: not kept in the cache, not
+				// counted as a completion, a failure for the breaker. (Found in the day-3 review: it was cached, and
+				// every identical request then got the error for the cache's ttl.)
+				x.code, x.err = "upstream_error", fmt.Errorf("the provider sent an error event mid-stream: %s", msg)
+			}
+		}
 		b := out(ev)
 		if b == nil {
 			continue
@@ -268,6 +277,9 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 		if ev.data != nil && !ev.done() {
 			x.events++
 		}
+	}
+	if x.code != "" {
+		return result{written: true, kind: answered, health: unhealthy}
 	}
 	return result{written: true, kind: answered, health: healthy}
 }

@@ -616,3 +616,35 @@ func TestPingsAfterTheFirstEventAreNotProgress(t *testing.T) {
 		t.Errorf("log: %s", logs)
 	}
 }
+
+// An error event from the provider after a stream's first event (vLLM sends one, then [DONE], when its engine fails)
+// reaches the client as it came, but the stream is a failure: the breaker counts it, the totals don't, and the log
+// line is a WARN with upstream_error.
+func TestAnErrorEventMidStreamIsAFailureNotAnAnswer(t *testing.T) {
+	redis, totals := redisTotals(t)
+	errorEvent := `data: {"error":{"message":"the engine failed","type":"server_error"}}` + "\n\n"
+	events := []string{chunk, errorEvent, "data: [DONE]\n\n"}
+	up := newProvider(t, streaming(events, 0, false))
+	srv, _, logs := gatewayFor(t, redis+`,"circuit_breaker":{"failures":1,"cooldown":"1m"}`,
+		[]string{at(up, `"stream_usage":false`)}, "m=p0/x")
+	_, got, err := readStream(t, srv, askStream)
+	if err != nil || len(got) != len(events) {
+		t.Fatalf("%d events, %v", len(got), err)
+	}
+	for i := range events {
+		if got[i].raw != events[i] {
+			t.Errorf("event %d: %q, want %q", i, got[i].raw, events[i])
+		}
+	}
+	l := logLines(t, logs, "chat completion")[0]
+	if l["level"] != "WARN" || l["code"] != "upstream_error" || !strings.Contains(fmt.Sprint(l["err"]), "the engine failed") {
+		t.Errorf("log: %v", l)
+	}
+	if rows := today(t, totals); len(rows) != 0 {
+		t.Errorf("counted: %+v", rows)
+	}
+	resp, b := send(t, srv, askStream)
+	if _, code, _, _ := errorOf(t, b); resp.StatusCode != 503 || code != "circuit_open" {
+		t.Errorf("the breaker wasn't told: %d %s", resp.StatusCode, b)
+	}
+}

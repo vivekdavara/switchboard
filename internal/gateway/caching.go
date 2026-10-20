@@ -54,6 +54,7 @@ func (g *Gateway) lookup(w http.ResponseWriter, r *http.Request, x *exchange, re
 		g.serveHit(w, r, x, e)
 		return "", true
 	}
+	// The client is told "miss" when Redis couldn't say too: it gets a fresh answer either way; the log has why.
 	w.Header().Set("X-Switchboard-Cache", "miss")
 	return key, false
 }
@@ -92,14 +93,14 @@ func (g *Gateway) serveHit(w http.ResponseWriter, r *http.Request, x *exchange, 
 	g.addTotals(r, x, usage.Entry{CacheHits: 1})
 }
 
-// store keeps a completion's answer under key, once the client has it.
+// store keeps a completion's answer under key, once the client has it. A 200 whose body is an error object (some
+// providers answer so) is no answer, and isn't kept (a suspicion of the day-3 review).
 func (g *Gateway) store(r *http.Request, x *exchange, key string, ttl time.Duration, body []byte) {
+	if _, isError := streamError(body); isError && !x.streamed {
+		return
+	}
 	e := cache.Entry{Provider: x.provider, UpstreamModel: x.upstreamModel, Stream: x.streamed, Events: x.events,
 		Body: body}
-	if x.hasUsage {
-		u := x.usage
-		e.Usage = &u
-	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), g.cfg.Redis.Timeout)
 	defer cancel()
 	kept, err := g.cache.Put(ctx, key, e, ttl)
