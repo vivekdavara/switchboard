@@ -24,10 +24,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/vivekdavara/switchboard/internal/breaker"
 	"github.com/vivekdavara/switchboard/internal/budget"
 	"github.com/vivekdavara/switchboard/internal/config"
 	"github.com/vivekdavara/switchboard/internal/openai"
+	"github.com/vivekdavara/switchboard/internal/ratelimit"
 	"github.com/vivekdavara/switchboard/internal/route"
 )
 
@@ -57,6 +60,9 @@ type Gateway struct {
 	intn     func(n int) int // the router's randomness: a uniform integer in [0, n)
 	budget   *budget.Budget
 	breakers map[string]*breaker.Breaker // by provider name
+
+	rdb     *redis.Client // nil when the file names no Redis
+	limiter *ratelimit.Limiter
 }
 
 // New makes a gateway for cfg, forwarding through transport (NewTransport's if nil) and logging to log. It isn't
@@ -82,6 +88,11 @@ func New(cfg *config.Config, transport http.RoundTripper, log *slog.Logger) *Gat
 	for _, p := range cfg.Providers {
 		g.breakers[p.Name] = breaker.New(cfg.Breaker, nil)
 	}
+	if cfg.Redis != nil {
+		redis.SetLogger(quiet{})
+		g.rdb = NewRedis(cfg.Redis)
+		g.limiter = ratelimit.New(g.rdb, cfg.Redis.Prefix)
+	}
 	g.mux.HandleFunc("POST /v1/chat/completions", g.chat)
 	g.mux.HandleFunc("GET /v1/models", g.models)
 	g.mux.HandleFunc("GET /v1/models/{model...}", g.model) // "..." because model names can hold slashes
@@ -102,6 +113,14 @@ func NewTransport() *http.Transport {
 // SetReady says whether GET /readyz answers 200.
 func (g *Gateway) SetReady(ready bool) { g.ready.Store(ready) }
 
+// Close closes the gateway's connections to Redis, once no request is running.
+func (g *Gateway) Close() error {
+	if g.rdb == nil {
+		return nil
+	}
+	return g.rdb.Close()
+}
+
 // ServeHTTP answers a request whose Host is allowed (config.AllowedHosts). The health endpoints answer any Host: a
 // load balancer probes by address (Host: 10.0.0.5:8108), /readyz's 503 during a drain exists for it, and what they
 // say is no secret to a rebinding page. A refusal is logged, so an operator sees rebinding attempts (both found in
@@ -114,6 +133,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		openai.WriteError(w, openai.Errorf(http.StatusForbidden, openai.TypeInvalidRequest, "", "host_not_allowed",
 			"the Host %q is not one this gateway answers to (allowed_hosts)", r.Host))
 		return
+	}
+	if !health {
+		var ok bool
+		if r, ok = g.authenticate(w, r); !ok {
+			return
+		}
 	}
 	openai.Serve(g.mux, w, r)
 }
@@ -197,12 +222,23 @@ type exchange struct {
 	attempts        []attemptLog // the attempts made, in order
 	tried           []attemptLog // the attempts and the targets skipped, in order
 	budgetSpent     bool         // a retry was refused by the retry budget
+	client          string       // the client's name, when the file names clients
+	rateLimit       string       // "refused", or "unavailable" when Redis couldn't say
+	redisErr        error        // why Redis couldn't, for the log only
 }
 
 func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	x := &exchange{id: g.newID(), began: time.Now()}
 	defer g.logExchange(x)
 	w.Header().Set("X-Request-Id", x.id)
+
+	// 0. The client's rate limit (day 3), before the body is read: a refused request costs one Redis round trip.
+	if cl := clientOf(r); cl != nil {
+		x.client = cl.Name
+		if cl.RateLimit != nil && !g.rateLimit(w, r, x, cl) {
+			return
+		}
+	}
 
 	// 1. Content type: only application/json, so a browser can't post here cross-origin without asking first.
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
@@ -599,6 +635,15 @@ func (g *Gateway) logExchange(x *exchange) {
 		slog.Float64("ms", ms(time.Since(x.began))),
 		slog.Int("request_bytes", x.requestBytes),
 		slog.Int("response_bytes", x.responseBytes),
+	}
+	if x.client != "" {
+		attrs = append(attrs, slog.String("client", x.client))
+	}
+	if x.rateLimit != "" {
+		attrs = append(attrs, slog.String("rate_limit", x.rateLimit))
+	}
+	if x.redisErr != nil {
+		attrs = append(attrs, slog.String("redis_err", x.redisErr.Error()))
 	}
 	if x.provider != "" {
 		attrs = append(attrs, slog.String("provider", x.provider), slog.String("upstream_model", x.upstreamModel))

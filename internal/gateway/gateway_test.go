@@ -110,6 +110,7 @@ func gatewayFor(t *testing.T, extra string, providers []string, models ...string
 	}
 	logs := &syncBuffer{}
 	g := New(cfg, nil, slog.New(slog.NewJSONHandler(logs, nil)))
+	t.Cleanup(func() { g.Close() }) // after the server's Close, which runs first
 	srv := httptest.NewServer(g)
 	t.Cleanup(srv.Close)
 	return srv, g, logs

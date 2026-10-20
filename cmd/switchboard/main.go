@@ -151,6 +151,7 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, listening 
 		return 1
 	}
 	g := gateway.New(cfg, nil, log)
+	defer g.Close()
 	// Every request's context derives from base, so cancelling it (with gateway.ErrShutdown as the cause) cancels
 	// every request still running when the grace is over, and their upstream requests with them.
 	base, cancelAll := context.WithCancelCause(context.Background())
