@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -288,5 +289,39 @@ func TestTheTotalsAndTheCacheOutliveTheClient(t *testing.T) {
 	}
 	if rows := today(t, totals); len(rows) != 1 || rows[0].Completions != 1 {
 		t.Errorf("%+v", rows)
+	}
+}
+
+func TestAStopEndsATotalsWriteToARedisThatNeverAnswers(t *testing.T) {
+	silent, err := net.Listen("tcp", "127.0.0.1:0") // accepts connections, never answers
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { silent.Close() })
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	_, g, logs := gatewayFor(t, fmt.Sprintf(`"redis":{"addr":%q,"timeout":"5s"}`, silent.Addr()), []string{at(up, "")},
+		"fast=p0/mock-small")
+	base, stop := context.WithCancelCause(context.Background())
+	srv := httptest.NewUnstartedServer(g)
+	srv.Config.BaseContext = func(net.Listener) context.Context { return base }
+	srv.Start()
+	defer srv.Close()
+	go func() { // stop once the provider has answered, while the totals wait on Redis
+		for deadline := time.Now().Add(5 * time.Second); len(up.requests()) == 0 && time.Now().Before(deadline); {
+			time.Sleep(time.Millisecond)
+		}
+		time.Sleep(100 * time.Millisecond)
+		stop(ErrShutdown)
+	}()
+	began := time.Now()
+	resp, b := send(t, srv, ask)
+	if resp.StatusCode != 200 || !strings.Contains(string(b), "mock-a answering") {
+		t.Errorf("the answer was lost: %d %s", resp.StatusCode, b)
+	}
+	if took := time.Since(began); took > 2*time.Second {
+		t.Errorf("took %s: the stop should end the totals' wait, not Redis's 5 s timeout", took)
+	}
+	if l := logLines(t, logs, "chat completion")[0]; l["totals_err"] == nil {
+		t.Errorf("log: %v", l)
 	}
 }

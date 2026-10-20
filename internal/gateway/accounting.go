@@ -137,15 +137,34 @@ func (g *Gateway) account(r *http.Request, x *exchange, answer []byte) {
 	g.addTotals(r, x, e)
 }
 
-// addTotals adds to the client's totals for the request's model, if there is a Redis. It runs after the answer, so
-// a client that has left by then doesn't stop it; Redis's timeout bounds it.
+// addTotals adds to the client's totals for the request's model, if there is a Redis.
 func (g *Gateway) addTotals(r *http.Request, x *exchange, e usage.Entry) {
 	if g.totals == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), g.cfg.Redis.Timeout)
+	ctx, cancel := g.afterAnswer(r)
 	defer cancel()
-	if err := g.totals.Add(ctx, x.began, clientName(clientOf(r)), x.route, e); err != nil {
+	if _, err := untilDone(ctx, func() (struct{}, error) {
+		return struct{}{}, g.totals.Add(ctx, x.began, clientName(clientOf(r)), x.route, e)
+	}); err != nil {
 		x.totalsErr = err
+	}
+}
+
+// afterAnswer is the context of the Redis writes that follow an answer (the totals, keeping it in the cache), bounded
+// by Redis's timeout. A client that has left doesn't cancel it: it has its answer, and the writes are the gateway's.
+// The stop does: the answer is still in net/http's buffer until the handler returns, and a write to a hung Redis
+// mustn't hold it past the second the stop gives running requests (a suspicion of the day-3 review: with a timeout of
+// up to 10 s, it could).
+func (g *Gateway) afterAnswer(r *http.Request) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), g.cfg.Redis.Timeout)
+	stop := context.AfterFunc(r.Context(), func() {
+		if context.Cause(r.Context()) == ErrShutdown {
+			cancel()
+		}
+	})
+	return ctx, func() {
+		stop()
+		cancel()
 	}
 }

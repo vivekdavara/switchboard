@@ -109,9 +109,9 @@ func (g *Gateway) store(r *http.Request, x *exchange, key string, ttl time.Durat
 	}
 	e := cache.Entry{Provider: x.provider, UpstreamModel: x.upstreamModel, Stream: x.streamed, Events: x.events,
 		Body: body}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), g.cfg.Redis.Timeout)
+	ctx, cancel := g.afterAnswer(r)
 	defer cancel()
-	kept, err := g.cache.Put(ctx, key, e, ttl)
+	kept, err := untilDone(ctx, func() (bool, error) { return g.cache.Put(ctx, key, e, ttl) })
 	x.cacheStored, x.cacheErr = kept, err
 }
 
