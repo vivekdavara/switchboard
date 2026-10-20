@@ -167,6 +167,10 @@ func TestAStreamsUsageIsCountedWhetherOrNotTheClientAskedForIt(t *testing.T) {
 	if lines[0]["events"] != 34.0 {
 		t.Errorf("the usage chunk taken out isn't an event the client got: %v", lines[0])
 	}
+	if lines[0]["usage_asked"] != true || lines[1]["usage_asked"] != nil || lines[2]["usage_asked"] != nil {
+		t.Errorf("usage_asked only where the gateway asked: %v %v %v", lines[0]["usage_asked"],
+			lines[1]["usage_asked"], lines[2]["usage_asked"])
+	}
 	rows := today(t, totals)
 	if len(rows) != 2 || rows[0].Model != "m" || rows[0].Entry != (usage.Entry{Completions: 2,
 		Tokens: usage.Usage{Prompt: 2, Completion: 64}, Cost: 38_700_000}) ||
@@ -383,4 +387,23 @@ func FuzzUnaskedsFastPathAgreesWithTheParse(f *testing.F) {
 			t.Fatalf("for %q the fast path gives %q, the parse %q", data, fast, slow)
 		}
 	})
+}
+
+func TestTheFastPathTakesOnlyWhatItCanCutExactly(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{`data: {"a":1,"usage":null}` + "\n\n", `data: {"a":1}` + "\n\n"},                                  // cut
+		{`data: {"a":,"usage":null}` + "\n\n", `data: {"a":,"usage":null}` + "\n\n"},                       // not JSON: as it came
+		{`data: {"usage":{"x":1},"usage":null}` + "\n\n", `data: {"usage":{"x":1},"usage":null}` + "\n\n"}, // a key twice
+		{"id: 3\n" + `data: {"a":1,"usage":null}` + "\n\n", "id: 3\n" + `data: {"a":1}` + "\n\n"},          // the parse
+		{`data: {"a":1,"usage":null}` + "\r\n\r\n", "data: {\"a\":1}\n\r\n"},                               // the parse
+	} {
+		r := newEventReader(strings.NewReader(tc.raw), 1<<20)
+		ev, err := r.next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(unasked(ev)); got != tc.want {
+			t.Errorf("%q:\n got %q\nwant %q", tc.raw, got, tc.want)
+		}
+	}
 }

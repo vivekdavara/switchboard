@@ -409,7 +409,7 @@ python3 scripts/bench_medians.py < run/bench-day3.txt
   2.74] and 76 allocations by parsing the chunk and writing it again, so a 34-event stream whose client didn't ask
   for usage paid about 93 µs of CPU, 15 times day 2's whole relay (6 µs). A fast path for OpenAI's own shape (the
   chunk ends with `,"usage":null}`, cut out of the bytes after `json.Valid`) made it 414 ns [414, 431] and 1
-  allocation (`run/bench-day3-unasked-fast.txt`, at the commit after `9b62641`, 16:28; the 1-minute load average was
+  allocation (`run/bench-day3-unasked-fast.txt`, the code of `ff16d42`, 16:28; the 1-minute load average was
   22.9 from a fuzz run just ended, but the unchanged case, 103.7 ns against 103.4, says the run itself was quiet).
   A chunk with no usage in it passes in 0.10 µs. `FuzzUnaskedsFastPathAgreesWithTheParse` checks the cut against the
   parse: 3,146,813 inputs in 46 s, no difference.
