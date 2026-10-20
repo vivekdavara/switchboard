@@ -31,10 +31,13 @@ func upstreamBody(req *openai.ChatRequest, t config.Target) (body []byte, strip 
 	return req.WithModel(t.UpstreamModel), false
 }
 
-// unasked is what to send in place of a stream's event when the gateway asked for the usage the client didn't: a
-// chunk that is only the usage (no choices, or an empty list of them, as OpenAI sends it last) is dropped (nil); a
-// usage member on any other chunk (OpenAI puts "usage": null on every chunk when asked) is taken out, and the rest of
-// the chunk written compacted on one data line. Every other event goes as it came, byte for byte.
+// unasked is what to send in place of a stream's event when the gateway asked for the usage the client didn't: that
+// usage taken out, and nothing else. A chunk that carries a usage object and no choices (OpenAI's last chunk, which a
+// client that didn't ask never gets) is dropped (nil). A usage member on any other chunk (the "usage": null OpenAI
+// puts on every chunk when asked, or a usage that comes with the last choices) is removed: the event's data line is
+// written again without it, its other lines (id:, event:, comments) as they were. Every other event goes as it came,
+// byte for byte. (The first version dropped every chunk with a usage member and no choices, even "usage": null, which
+// lost Azure's first chunk, and wrote every rewritten event as a lone data line; both found in the day-3 review.)
 func unasked(ev sseEvent) []byte {
 	if ev.data == nil || !bytes.Contains(ev.data, []byte(`"usage"`)) {
 		return ev.raw
@@ -44,11 +47,12 @@ func unasked(ev sseEvent) []byte {
 		return ev.raw
 	}
 	var kept []jsonstrict.Member
-	hasUsage, choices := false, false
+	var usage json.RawMessage
+	choices := false
 	for _, m := range members {
 		switch m.Key {
 		case "usage":
-			hasUsage = true
+			usage = m.Value
 			continue
 		case "choices":
 			var list []json.RawMessage
@@ -57,9 +61,9 @@ func unasked(ev sseEvent) []byte {
 		kept = append(kept, m)
 	}
 	switch {
-	case !hasUsage:
+	case usage == nil:
 		return ev.raw
-	case !choices:
+	case !choices && !bytes.Equal(usage, []byte("null")):
 		return nil
 	}
 	var obj bytes.Buffer
@@ -74,10 +78,43 @@ func unasked(ev sseEvent) []byte {
 		obj.Write(m.Value)
 	}
 	obj.WriteByte('}')
+	data := obj.Bytes()
+	if bytes.ContainsAny(data, "\r\n") { // a value spread over several data lines: one line can't hold its newlines
+		var compact bytes.Buffer
+		json.Compact(&compact, data) // can't fail: the members came from a valid object
+		data = compact.Bytes()
+	}
+	return withData(ev.raw, data)
+}
+
+// withData is an event with its data lines replaced by one line holding data, where the first of them was; every other
+// line is kept as it was.
+func withData(raw, data []byte) []byte {
 	var b bytes.Buffer
-	b.WriteString("data: ")
-	json.Compact(&b, obj.Bytes()) // can't fail: the members came from a valid object
-	b.WriteString("\n\n")
+	wrote := false
+	for len(raw) > 0 {
+		line := raw
+		if i := bytes.IndexByte(raw, '\n'); i >= 0 {
+			line = raw[:i+1]
+		}
+		raw = raw[len(line):]
+		text := bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
+		lead := []byte(nil)
+		if t, ok := bytes.CutPrefix(text, bom); ok { // only the stream's first line can have one
+			lead, text = bom, t
+		}
+		if !bytes.HasPrefix(text, []byte("data:")) && !bytes.Equal(text, []byte("data")) {
+			b.Write(line)
+			continue
+		}
+		if !wrote {
+			b.Write(lead)
+			b.WriteString("data: ")
+			b.Write(data)
+			b.WriteByte('\n')
+			wrote = true
+		}
+	}
 	return b.Bytes()
 }
 

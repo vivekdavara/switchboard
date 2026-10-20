@@ -151,6 +151,13 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 	attempt int, timer *time.Timer, ticket *breaker.Ticket, resp *http.Response) result {
 	defer resp.Body.Close()
 	events := newEventReader(resp.Body, g.cfg.MaxResponseBytes)
+	// Each data event's usage is read as it passes (the last one counts); if the gateway asked for the usage the
+	// client didn't, it is taken out again (unasked).
+	readUsage := func(ev sseEvent) {
+		if u, ok := usage.FromChunk(ev.data); ok {
+			x.usage, x.hasUsage = u, true
+		}
+	}
 	var first sseEvent
 	var pending [][]byte // comments and the like before the first data event, sent with it
 	for first.data == nil {
@@ -168,6 +175,12 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 		}
 		if ev.data == nil {
 			pending = append(pending, ev.raw)
+			continue
+		}
+		if x.stripUsage && jsonObject(ev.data) && unasked(ev) == nil {
+			// The usage the gateway asked for, before any chunk the client would see: no answer has started. (Taken out
+			// after the commit, it made a 200 of nothing but [DONE]; found in the day-3 review.)
+			readUsage(ev)
 			continue
 		}
 		first = ev
@@ -209,12 +222,8 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 		x.keep.add(b)
 		return rc.Flush() == nil
 	}
-	// Each data event's usage is read as it passes; if the gateway asked for the usage the client didn't, it is
-	// taken out again (unasked).
 	out := func(ev sseEvent) []byte {
-		if u, ok := usage.FromChunk(ev.data); ok {
-			x.usage, x.hasUsage = u, true
-		}
+		readUsage(ev)
 		if x.stripUsage {
 			return unasked(ev)
 		}
