@@ -49,13 +49,18 @@ demo:
 # requests, for 30 s on macOS, out of 16,384 ephemeral ports. Needs a quiet machine.
 # Day 2 adds a streamed answer straight and through the gateway, a model whose first provider is dead (refusing or
 # hanging until its 10 ms timeout) with breakers off and on, and the router's, budget's and breaker's cost per call.
-bench:
+# Day 3 adds a request with a client key, the totals, the rate limit, and a cache miss and hit (the Redis round trips
+# are to the local Redis that make test starts), taking the usage out of a chunk, and one rate-limit check alone.
+bench: redis
 	go test -run '^$$' -bench Overhead -benchtime 20000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench Pool -benchtime 3000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench ParseAndRewrite -benchtime 20000x -count 6 ./internal/openai
 	go test -run '^$$' -bench Stream -benchtime 5000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench DeadProvider -benchtime 500x -count 6 ./internal/gateway
 	go test -run '^$$' -bench . -benchtime 1000000x -count 6 ./internal/route ./internal/budget ./internal/breaker
+	go test -run '^$$' -bench Day3 -benchtime 5000x -count 6 ./internal/gateway
+	go test -run '^$$' -bench Unasked -benchtime 1000000x -count 6 ./internal/gateway
+	go test -run '^$$' -bench Take -benchtime 20000x -count 6 ./internal/ratelimit
 
 # Builds for the other platforms, as CI does: a Unix-only call (syscall.Kill) once broke the Windows build unnoticed.
 cross:
