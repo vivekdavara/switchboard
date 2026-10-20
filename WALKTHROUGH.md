@@ -540,6 +540,13 @@ so low it overflowed (a burst may now take at most 30 days to refill), a 200 who
 SCAN returning a key twice. Of its 14 one-line changes no test caught, 13 fail a test now; the 14th touched a field
 that was written and never read, which is gone.
 
+**And the second review?**
+It looked only at the fixes, and found two bugs in them, as on days 1 and 2. My new rule "drop a chunk with a usage
+object and no choices" also dropped an error event that carried a usage, so a provider's refusal read as no answer
+and a mid-stream error never reached the client; and the usage I now read before the commit stayed on the exchange
+when that attempt failed, so the next provider's answer was billed with the first one's tokens. An error now loses
+only its usage, and each attempt starts with no usage.
+
 **What does day 3 cost a request, in numbers?**
 Its Redis round trips, each 95 to 99 µs on this Mac's loopback (README "Results (day 3)"): a rate-limited, accounted
 request is 285 µs at p50 against 87.5 µs without day 3, and a cache hit 227.5 µs. The key itself is 0.5 µs. Taking

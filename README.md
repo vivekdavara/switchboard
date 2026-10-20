@@ -538,7 +538,10 @@ before fixing, gave four more: a stop during a Redis call waited out a hung Redi
 (go-redis ends a command at its deadline, not at a cancel) and after it (the answer held in the buffer); a 200 whose
 body is an error was cached; a rate so low it overflowed; and SCAN's duplicates. Its 14 one-line changes no test
 caught: one went with the code it touched (the cache entry's unused usage), and the other 13 fail a test now, each
-run here as a mutant after the tests were written.
+run here as a mutant after the tests were written. A second review (one agent, at `7ef9c60`, of the fixes only) found
+two bugs in them, kept as `review2_d3_*_test.go`: an error event carrying a usage was taken for the usage chunk and
+dropped (so a first event read as no answer, and a mid-stream error never reached the client), and a usage read
+before the commit from an attempt that then failed was counted for the next attempt's answer.
 
 Day 2's mutation checks (the commit messages list them): 18 mechanisms of the fallback, the router, the budget and
 the breaker broken one at a time, 16 caught at first (the budget's expiry is caught now; a redundant "stop" flag was
