@@ -1,4 +1,10 @@
-.PHONY: bench build check cross demo fuzz lint test
+.PHONY: bench build check cross demo fuzz lint redis redis-stop test
+
+# The Redis the tests use (day 3): a project-local one on 6382, started by `make test` if none answers there, keeping
+# nothing on disk. Tests that need Redis are skipped when SWITCHBOARD_TEST_REDIS is unset (a plain `go test ./...`),
+# and fail when it is set and nothing answers. `make redis-stop` stops it.
+REDIS_PORT ?= 6382
+export SWITCHBOARD_TEST_REDIS ?= 127.0.0.1:$(REDIS_PORT)
 
 # What CI runs.
 check: lint test
@@ -9,8 +15,17 @@ lint:
 	@unformatted="$$(find . -path ./.scratch -prune -o -name '*.go' -print | xargs gofmt -l)"; if [ -n "$$unformatted" ]; then echo "not gofmt-formatted:"; echo "$$unformatted"; exit 1; fi
 	go vet ./...
 
-test:
+test: redis
 	go test -race -count=1 -timeout 3m ./...
+
+redis:
+	@redis-cli -p $(REDIS_PORT) ping >/dev/null 2>&1 || { mkdir -p run && \
+		redis-server --port $(REDIS_PORT) --bind 127.0.0.1 --daemonize yes --save "" --appendonly no \
+			--dir "$(CURDIR)/run" --logfile "$(CURDIR)/run/redis.log" && \
+		for i in 1 2 3 4 5 6 7 8 9 10; do redis-cli -p $(REDIS_PORT) ping >/dev/null 2>&1 && break; sleep 0.1; done; }
+
+redis-stop:
+	-redis-cli -p $(REDIS_PORT) shutdown nosave
 
 build:
 	go build -o bin/ ./cmd/...

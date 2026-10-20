@@ -8,6 +8,20 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    services:
+      # Rate limits, the cache and usage totals (day 3) are tested against a real Redis. Set, the variable makes
+      # those tests fail rather than skip when Redis doesn't answer, so the job can't pass by skipping them.
+      redis:
+        image: redis:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      SWITCHBOARD_TEST_REDIS: 127.0.0.1:6379
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
