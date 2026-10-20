@@ -206,6 +206,7 @@ func (g *Gateway) relay(w http.ResponseWriter, r *http.Request, x *exchange, ctx
 			return false
 		}
 		x.responseBytes += len(b)
+		x.keep.add(b)
 		return rc.Flush() == nil
 	}
 	// Each data event's usage is read as it passes; if the gateway asked for the usage the client didn't, it is

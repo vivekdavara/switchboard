@@ -28,6 +28,7 @@ import (
 
 	"github.com/vivekdavara/switchboard/internal/breaker"
 	"github.com/vivekdavara/switchboard/internal/budget"
+	"github.com/vivekdavara/switchboard/internal/cache"
 	"github.com/vivekdavara/switchboard/internal/config"
 	"github.com/vivekdavara/switchboard/internal/openai"
 	"github.com/vivekdavara/switchboard/internal/ratelimit"
@@ -65,6 +66,7 @@ type Gateway struct {
 	rdb     *redis.Client // nil when the file names no Redis
 	limiter *ratelimit.Limiter
 	totals  *usage.Totals
+	cache   *cache.Cache
 }
 
 // New makes a gateway for cfg, forwarding through transport (NewTransport's if nil) and logging to log. It isn't
@@ -95,6 +97,7 @@ func New(cfg *config.Config, transport http.RoundTripper, log *slog.Logger) *Gat
 		g.rdb = NewRedis(cfg.Redis)
 		g.limiter = ratelimit.New(g.rdb, cfg.Redis.Prefix)
 		g.totals = usage.NewTotals(g.rdb, cfg.Redis.Prefix)
+		g.cache = cache.New(g.rdb, cfg.Redis.Prefix)
 	}
 	g.mux.HandleFunc("POST /v1/chat/completions", g.chat)
 	g.mux.HandleFunc("GET /v1/models", g.models)
@@ -234,7 +237,11 @@ type exchange struct {
 	hasUsage        bool
 	cost            int64 // picodollars, if priced
 	priced          bool
-	totalsErr       error // why the totals couldn't be added to, for the log only
+	totalsErr       error   // why the totals couldn't be added to, for the log only
+	cache           string  // the model's cache: hit, miss, bypass, refresh or unavailable
+	cacheStored     bool    // the answer was kept in the cache
+	cacheErr        error   // why the cache couldn't be read or written, for the log only
+	keep            keeping // a stream's bytes, for the cache
 }
 
 func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
@@ -318,6 +325,18 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	x.route = model.Name
 
+	// 5b. The cache (day 3), for a model that has one.
+	var cacheKey string
+	if model.Cache != nil {
+		var done bool
+		if cacheKey, done = g.lookup(w, r, x, req, model); done {
+			return
+		}
+		if cacheKey != "" && req.Stream {
+			x.keep.b = &bytes.Buffer{}
+		}
+	}
+
 	// 6 to 8, once per target until one answers: rewrite, forward, answer. DESIGN.md, "Fallback".
 	var last *result
 	var probeAt time.Time       // the earliest an open breaker skipped here lets a probe through
@@ -380,6 +399,9 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 				panic(http.ErrAbortHandler) // so no client can take the stream for a complete one
 			}
 			g.account(r, x, nil)
+			if cacheKey != "" && x.keep.b != nil {
+				g.store(r, x, cacheKey, model.Cache.TTL, x.keep.b.Bytes())
+			}
 			return
 		}
 		last = &res
@@ -414,6 +436,9 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		// Before the handler returns: an answer that fits net/http's buffer (a few KB) leaves only then, so this costs
 		// the client a Redis round trip, and in return the log line can say whether the totals were written.
 		g.account(r, x, last.body)
+		if cacheKey != "" {
+			g.store(r, x, cacheKey, model.Cache.TTL, last.body)
+		}
 	}
 }
 
@@ -676,6 +701,15 @@ func (g *Gateway) logExchange(x *exchange) {
 	}
 	if x.totalsErr != nil {
 		attrs = append(attrs, slog.String("totals_err", x.totalsErr.Error()))
+	}
+	if x.cache != "" {
+		attrs = append(attrs, slog.String("cache", x.cache))
+	}
+	if x.cacheStored {
+		attrs = append(attrs, slog.Bool("cache_stored", true))
+	}
+	if x.cacheErr != nil {
+		attrs = append(attrs, slog.String("cache_err", x.cacheErr.Error()))
 	}
 	if x.upstreamSent {
 		attrs = append(attrs, slog.Int("upstream_status", x.upstreamStatus),
