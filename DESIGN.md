@@ -692,9 +692,9 @@ What day 3 leaves for them to respect:
 
 - Every Redis step is bounded by `redis.timeout` and none may fail a request it doesn't have to ("When Redis is
   down"); day 4's chaos run should take Redis down too, not only a provider.
-- A request makes up to four Redis round trips (the limit, the cache lookup, the totals, and keeping a miss's answer), about 90 µs each on
-  this Mac's loopback (README "Results (day 3)"). The load test decides whether to batch the totals in the
-  background, and whether to pipeline the cache write with them.
+- A request makes up to four Redis round trips (the limit, the cache lookup, the totals, and keeping a miss's
+  answer), one after another, 95 to 99 µs each on this Mac's loopback (README "Results (day 3)"). The load test
+  decides whether to batch the totals in the background, and whether to pipeline the cache write with them.
 - The cache doesn't stop a stampede: N identical requests at once all miss and all go upstream. A single flight per
   key (in one gateway) or a lock in Redis (across gateways) is the fix if the load test shows it matters.
 - A rate limit counts requests; a client sending huge prompts spends tokens no request limit sees. A token limit

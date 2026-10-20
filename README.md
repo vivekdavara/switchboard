@@ -370,6 +370,50 @@ run's find (`go test -run '^$' -fuzz FuzzEventReaderAgreesWithTheReference -fuzz
 **Compatibility:** `make demo` passes its nine curl checks and the eleven checks of the official OpenAI Python SDK
 (openai 3.35.1), streaming and the SDK raising a broken stream's error event included, here and in CI.
 
+## Results (day 3)
+
+Measured on the same Apple M3 (8 cores), macOS 26.6.2, Go 1.27.1, **on battery** (62%, Low Power Mode off), other
+applications open, load average 3.9 to 4.2, at commit `1a08237`, with no review agent running. Redis 8.8.0 on
+loopback (the one `make test` starts, nothing kept on disk). Medians of 6 runs, ranges in brackets; requests are
+synthetic and the mock has no simulated latency, so these are the HTTP hops, the gateway's own work and its Redis
+round trips.
+
+```bash
+go test -run '^$' -bench Overhead -benchtime 20000x -count 6 ./internal/gateway > run/bench-day3.txt
+SWITCHBOARD_TEST_REDIS=127.0.0.1:6382 go test -run '^$' -bench Day3 -benchtime 5000x -count 6 ./internal/gateway >> run/bench-day3.txt
+go test -run '^$' -bench Unasked -benchtime 1000000x -count 6 ./internal/gateway >> run/bench-day3.txt
+SWITCHBOARD_TEST_REDIS=127.0.0.1:6382 go test -run '^$' -bench Take -benchtime 20000x -count 6 ./internal/ratelimit >> run/bench-day3.txt
+python3 scripts/bench_medians.py < run/bench-day3.txt
+```
+
+**What day 3 adds to a request** (`BenchmarkDay3`, the small request one at a time, 5,000 a run):
+
+| Setup | p50 | p99 | mean | Redis round trips |
+|---|---|---|---|---|
+| day 2's path (no key, no Redis) | 87.5 µs [87, 88] | 184 µs | 91.0 µs | 0 |
+| a client key | 88 µs [88, 89] | 190.5 µs | 91.8 µs | 0 |
+| the key and the totals | 187 µs [187, 188] | 303 µs | 190.8 µs | 1 (the MULTI) |
+| the key, a rate limit and the totals | 285 µs [285, 286] | 403.5 µs | 289.5 µs | 2 (the script, the MULTI) |
+| a cache that always misses | 373 µs [373, 374] | 504 µs | 378.1 µs | 3 (GET, MULTI, SET) |
+| a cache that always hits | 227.5 µs [227, 228] | 286.5 µs | 229.9 µs | 2 (GET, MULTI); no provider |
+
+- A client key costs about 0.5 µs (a SHA-256 and a map lookup). Each Redis round trip costs 95 to 99 µs on this
+  Mac's loopback (the differences between the rows): one rate-limit check alone (`BenchmarkTake`, an EVALSHA) is 88.9 µs [88.7, 89.0], and redis-benchmark's
+  own PING with one client has a p50 of 79 µs here (`redis-benchmark -p 6382 -n 20000 -c 1 -q -t ping_mbulk`, 15:53).
+  So day 3's cost is its round trips, made one after another: about 200 µs for a rate-limited, accounted request.
+  Batching the totals in the background (one round trip less per request) is day 4's to weigh.
+- A cache hit is 227.5 µs, against the provider's whole latency: next to the mock's default (200 ms to the first
+  token and 5 ms a token, about 360 ms for 32 tokens) or any real model, the hit is three orders of magnitude faster;
+  next to this benchmark's no-latency mock it is slower, because it makes two round trips where the mock makes none.
+- Taking the usage out of a chunk (`BenchmarkUnasked`, OpenAI's `"usage": null` on a 178-byte chunk): 2.73 µs [2.73,
+  2.74] and 76 allocations; a chunk with no usage in it passes in 0.10 µs. A 34-event stream whose client didn't ask
+  for usage pays about 93 µs of CPU for it, spread over the stream.
+- The same run's day-1 overhead (`BenchmarkOverhead`): 87 µs through the gateway against 40 µs straight to the mock
+  for the small request (47 µs added; 42 on day 1, 44 on day 2), 175 against 87 µs for the 4 KB one.
+- The OpenAI Python SDK and the 429 (the demo): carol, with a burst of 1 at 60 a minute, sends two requests at once;
+  the second is answered 1.02 s later, the SDK having read `retry-after-ms` and retried by itself (two demo runs,
+  1.02 s both times).
+
 ## Configuration
 
 `configs/local.json` routes three models (and an alias) to the two mocks; `smart` has a standby:
@@ -476,6 +520,18 @@ configuration's errors and host rules, 3 in parsing and the case rules, 6 in the
 signal channel's buffer of 2 rather than 1, a defence for an interleaving no test can force. Two more didn't count:
 one didn't build, and reading one byte more than the response limit changes nothing (the size check still catches
 it). The commit messages list them; the three reviews found the gaps in the first counts.
+
+Day 3 (205 test and fuzz functions at the start of the review, and more after it): a review (one agent, 17 minutes,
+at `4134835`, the core of the day) reproduced four bugs, all in streams, kept as `review_d3_*_test.go`: a stream
+with the provider's error event in it (what vLLM sends when its engine fails) was cached and counted, so the error
+was served from the cache for its ttl; taking the usage out dropped whole chunks that only had `"usage": null`
+(Azure's first chunk), and wrote every rewritten event as a lone data line, losing its `id:` and `event:` lines; and
+a usage chunk as a stream's first data event committed a 200 of nothing but `[DONE]`. Its suspicions, each tested
+before fixing, gave four more: a stop during a Redis call waited out a hung Redis's whole timeout, before the answer
+(go-redis ends a command at its deadline, not at a cancel) and after it (the answer held in the buffer); a 200 whose
+body is an error was cached; a rate so low it overflowed; and SCAN's duplicates. Its 14 one-line changes no test
+caught: one went with the code it touched (the cache entry's unused usage), and the other 13 fail a test now, each
+run here as a mutant after the tests were written.
 
 Day 2's mutation checks (the commit messages list them): 18 mechanisms of the fallback, the router, the budget and
 the breaker broken one at a time, 16 caught at first (the budget's expiry is caught now; a redundant "stop" flag was
