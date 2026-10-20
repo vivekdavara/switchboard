@@ -522,6 +522,28 @@ kept 90 days; `switchboard usage` prints a day. They're written before the handl
 Redis round trip but lets each request's log line say whether its totals were written. Batching them in the
 background is the obvious next step if day 4's load test says the round trip matters.
 
+**What did the review find in day 3's code?**
+One agent reviewed the day's core (`4134835`) for 17 minutes and reproduced four bugs, all in streams. A stream with
+the provider's own error event in the middle (vLLM sends one, then `[DONE]`, when its engine fails) was cached, so
+every identical request got the error from the cache for the ttl; now such a stream is a failure (not kept, not
+counted, the breaker told). Taking the usage out dropped any chunk with a `usage` member and no choices, even
+`"usage": null`, which loses Azure's first chunk; and it wrote each rewritten event as one data line, losing `id:`
+and `event:` lines. And a usage chunk as the first data event committed a 200 of nothing but `[DONE]`.
+
+**And from its suspicions?**
+Testing them against a Redis that accepts connections and never answers showed that go-redis ends a command at its
+deadline but not on a cancel: a stop waited out the whole Redis timeout, both before the answer and in the writes
+after it, while the answer sat in net/http's buffer. Every Redis call now returns when the request's context ends
+(`untilDone`), and the writes after an answer ignore a client that left but not the stop (`afterAnswer`). Also a rate
+so low it overflowed (a burst may now take at most 30 days to refill), a 200 whose body is an error being cached, and
+SCAN returning a key twice. Of its 14 one-line changes no test caught, 13 fail a test now; the 14th touched a field
+that was written and never read, which is gone.
+
+**What does day 3 cost a request, in numbers?**
+Its Redis round trips, each 95 to 99 µs on this Mac's loopback (README "Results (day 3)"): a rate-limited, accounted
+request is 285 µs at p50 against 87.5 µs without day 3, and a cache hit 227.5 µs. The key itself is 0.5 µs. Taking
+`"usage": null` out of a chunk is 2.7 µs. The round trips are sequential; batching the totals is the obvious cut.
+
 **What isn't counted?**
 Errors, broken streams (the provider may still bill the tokens it sent; the log line records the break), and
 attempts that went unanswered before a fallback, which may have cost something nobody can know. The log lines are

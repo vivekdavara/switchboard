@@ -705,6 +705,9 @@ func (g *Gateway) logExchange(x *exchange) {
 	if x.totalsErr != nil {
 		attrs = append(attrs, slog.String("totals_err", x.totalsErr.Error()))
 	}
+	if x.stripUsage {
+		attrs = append(attrs, slog.Bool("usage_asked", true)) // the gateway added stream_options.include_usage
+	}
 	if x.cache != "" {
 		attrs = append(attrs, slog.String("cache", x.cache))
 	}

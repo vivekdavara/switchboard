@@ -315,6 +315,8 @@ costs the gateway one Redis round trip and nothing upstream (a body over the siz
   `rate_limit_exceeded` with `Retry-After` (seconds, rounded up) and `retry-after-ms`, which the OpenAI Python SDK
   reads before retrying by itself: in the demo, the SDK's second request in a second is answered 1.02 s later with no
   code of the client's involved. (Only the Python SDK is checked; the others are generated from the same spec.)
+  `x-ratelimit-limit-requests` is the bucket's capacity (`burst`), so that `remaining` never exceeds it; OpenAI's
+  counts requests per minute, and with the default burst (a minute's requests) the two agree.
 
 ## Caching (day 3)
 
@@ -322,7 +324,10 @@ A model may have a `cache` (`ttl`, and `shared`, off by default). Its answers ar
 request gets the kept answer without any provider being asked.
 
 - **What is kept: answers only.** A 200 with a completion, and a stream that ended with `[DONE]` (day 2's rule):
-  never a 400, a failure, a broken stream, or an answer over 1 MiB. A stream is kept as the bytes the client got (so
+  never a 400, a failure, a broken stream, an answer over 1 MiB, a 200 whose body is an error object, or a stream with
+  the provider's error event in it (what vLLM sends when its engine fails mid-stream, and then `[DONE]`; such a
+  stream is relayed as it came, and is a failure for the breaker, uncounted, and logged as `upstream_error`: the
+  day-3 review found it cached, and every identical request then served the error for the ttl). A stream is kept as the bytes the client got (so
   with the usage already taken out when the gateway asked for it, below) and replayed all at once.
 - **The key is everything that decides the answer**: the SHA-256 of a version, the scope (the client's name, or `*`
   for a shared cache), the model's own name (so an alias and its model share entries) and the request's body with that
@@ -353,7 +358,12 @@ Every completion's usage, as the provider reported it, priced at the provider's 
   `usage` member on any other chunk (OpenAI writes `"usage": null` on every chunk when asked) is removed, the chunk
   rewritten compacted. Every other event goes byte for byte, so the client gets the stream it asked for (a test
   compares it with the mock's own stream, event for event). A provider that refuses `stream_options` can have
-  `stream_usage: false`; a stream from it whose client didn't ask then counts as a completion with no usage. Because
+  `stream_usage: false`; a stream from it whose client didn't ask then counts as a completion with no usage. (Left
+  on for such a provider, every stream whose client didn't ask gets the provider's 400 about a parameter the client
+  never sent: the log line's `usage_asked` says the gateway added it.) The usage chunk the gateway asked for is read
+  before the commit, so one that comes before any chunk the client would see doesn't start an answer (the day-3
+  review found it committing a 200 of nothing but `[DONE]`). A rewritten event keeps its other lines (`id:`,
+  `event:`, comments), and its JSON is compacted only when a value spans several data lines. Because
   the gateway now reads `include_usage`, a key equal to `stream_options` or `include_usage` only when case is ignored
   is refused, as for `model` and `stream` (a Go provider would read `{"Include_Usage": true}` as the real thing while
   the gateway thought the client hadn't asked).
@@ -383,6 +393,13 @@ Redis that is down or never answers costs a request at most that, per step:
 | a client's rate limit | the request goes on unlimited (`on_error: allow`, the default), or is 503 `rate_limit_unavailable` (`on_error: refuse`) | `rate_limit: unavailable`, `redis_err` |
 | the cache lookup | a miss; the provider is asked | `cache: unavailable`, `cache_err` |
 | keeping the answer, adding the totals | nothing: the client has its answer | `cache_err`, `totals_err` |
+
+go-redis ends a command at its context's deadline, but not when the context is cancelled, so a stop (or a client
+leaving) would wait out a hung Redis's whole timeout. Every Redis call therefore returns as soon as the request's
+context ends (`untilDone`): before the answer, with the stop's 503 (not `rate_limit_unavailable`) or the client's
+499; after it, the writes ignore a client that left (it has its answer) but not the stop, which would otherwise hold
+the buffered answer past the second the stop gives running requests (both found from the day-3 review's suspicions,
+with a Redis that accepts connections and never answers).
 
 Allowing is the default because the limit protects the providers' budget, not the client's answer: a Redis outage
 shouldn't become a gateway outage. A gateway in front of a budget that must not be exceeded sets `refuse`.
