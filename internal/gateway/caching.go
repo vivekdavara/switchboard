@@ -52,6 +52,10 @@ func (g *Gateway) lookup(w http.ResponseWriter, r *http.Request, x *exchange, re
 	})
 	e, ok := res.e, res.ok
 	switch {
+	case err != nil && g.ended(w, r, x, err):
+		// The stop, or the client leaving, not Redis: no attempt follows (as for the rate limit; the day-3 second
+		// review found it logged as Redis's failure, and the request went on to its first attempt).
+		return "", true
 	case err != nil:
 		x.cache, x.cacheErr = "unavailable", err
 	case !ok || e.Stream != req.Stream: // a stream's key differs from its plain twin's, so the second can't happen

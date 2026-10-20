@@ -407,3 +407,40 @@ func TestTheFastPathTakesOnlyWhatItCanCutExactly(t *testing.T) {
 		}
 	}
 }
+
+func TestARewrittenEventKeepsTheStreamsByteOrderMarkAndLosesEveryDataLine(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		// The stream's first event, after the byte order mark the SSE grammar allows: the mark stays first.
+		{"\xef\xbb\xbfdata: {\"choices\":[1],\ndata: \"usage\":null}\n\n", "\xef\xbb\xbfdata: {\"choices\":[1]}\n\n"},
+		// A bare "data" line is a data line too (an empty value): it goes with the others.
+		{"data: {\"choices\":[1],\ndata\ndata: \"usage\":null}\n\n", "data: {\"choices\":[1]}\n\n"},
+	} {
+		r := newEventReader(strings.NewReader(tc.raw), 1<<20)
+		ev, err := r.next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(unasked(ev)); got != tc.want {
+			t.Errorf("%q:\n got %q\nwant %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+// The usage chunk the gateway asked for, coming before any chunk the client sees, is skipped for the commit but still
+// counted.
+func TestAUsageChunkBeforeTheFirstAnswerIsStillCounted(t *testing.T) {
+	events := []string{
+		`data: {"id":"c","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":9}}` + "\n\n",
+		`data: {"id":"c","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+	up := newProvider(t, streaming(events, 0, false))
+	srv, _, logs := gatewayFor(t, "", []string{at(up, "")}, "m=p0/x")
+	_, got, err := readStream(t, srv, askStream)
+	if err != nil || len(got) != 2 || got[0].raw != events[1] {
+		t.Fatalf("%v %v", got, err)
+	}
+	if l := logLines(t, logs, "chat completion")[0]; l["prompt_tokens"] != 4.0 || l["completion_tokens"] != 9.0 {
+		t.Errorf("log: %v", l)
+	}
+}

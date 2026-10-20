@@ -89,7 +89,9 @@ const Retention = 90 * 24 * time.Hour
 
 // Entry is what one request adds to its client's totals for its model on its day.
 type Entry struct {
-	Completions int64 // answers a provider gave (a 200, or a stream that ended with [DONE])
+	// Completions are answers a provider gave: a 200 that isn't an error object, or a stream that ended with [DONE]
+	// and had no error event in it.
+	Completions int64
 	CacheHits   int64 // answers the cache gave: no tokens spent
 	Tokens      Usage
 	Cost        int64 // picodollars

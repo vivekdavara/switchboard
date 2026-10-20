@@ -71,6 +71,22 @@ func untilDone[T any](ctx context.Context, f func() (T, error)) (T, error) {
 	}
 }
 
+// ended answers a request whose context ended during a Redis call (the error is the call's), and says so: the stop
+// gets its 503, a client that left has its connection dropped (logged 499). False if the context hasn't ended, and
+// Redis is to blame.
+func (g *Gateway) ended(w http.ResponseWriter, r *http.Request, x *exchange, err error) bool {
+	if r.Context().Err() == nil {
+		return false
+	}
+	if context.Cause(r.Context()) == ErrShutdown {
+		g.fail(w, x, openai.Errorf(http.StatusServiceUnavailable, openai.TypeServer, "", "shutting_down",
+			"the gateway is shutting down; retry"), err)
+		return true
+	}
+	x.status, x.err = StatusClientClosed, err
+	panic(http.ErrAbortHandler)
+}
+
 type clientKey struct{}
 
 // clientOf returns the client a request was authenticated as; nil when the file names no clients.
@@ -135,16 +151,10 @@ func (g *Gateway) rateLimit(w http.ResponseWriter, r *http.Request, x *exchange,
 	d, err := untilDone(r.Context(), func() (ratelimit.Decision, error) {
 		return g.limiter.Take(ctx, cl.Name, *cl.RateLimit)
 	})
-	if err != nil && r.Context().Err() != nil {
+	if err != nil && g.ended(w, r, x, err) {
 		// Not Redis's fault: the gateway is stopping, or the client left (a suspicion of the day-3 review: with
 		// on_error refuse, a stop during the check was answered rate_limit_unavailable).
-		if context.Cause(r.Context()) == ErrShutdown {
-			g.fail(w, x, openai.Errorf(http.StatusServiceUnavailable, openai.TypeServer, "", "shutting_down",
-				"the gateway is shutting down; retry"), err)
-			return false
-		}
-		x.status, x.err = StatusClientClosed, err
-		panic(http.ErrAbortHandler)
+		return false
 	}
 	if err != nil {
 		x.rateLimit, x.redisErr = "unavailable", err

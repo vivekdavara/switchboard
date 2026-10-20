@@ -241,7 +241,7 @@ func TestKeepingAStreamStopsAtTheLimit(t *testing.T) {
 }
 
 func TestA200ThatIsAnErrorIsntKept(t *testing.T) {
-	redis, _ := redisTotals(t)
+	redis, totals := redisTotals(t)
 	up := newProvider(t, answering(200, `{"error":{"message":"overloaded","type":"server_error"}}`))
 	srv, _, _ := gatewayFor(t, redis, []string{at(up, "")}, `{"name":"fast","provider":"p0","cache":{"ttl":"1m"}}`)
 	for range 2 {
@@ -252,6 +252,9 @@ func TestA200ThatIsAnErrorIsntKept(t *testing.T) {
 	if n := len(up.requests()); n != 2 {
 		t.Errorf("the provider was asked %d times", n)
 	}
+	if rows := today(t, totals); len(rows) != 0 {
+		t.Errorf("a 200 that is an error was counted as a completion: %+v", rows)
+	}
 }
 
 func TestAStopDuringTheCacheLookupEndsTheWait(t *testing.T) {
@@ -261,7 +264,7 @@ func TestAStopDuringTheCacheLookupEndsTheWait(t *testing.T) {
 	}
 	t.Cleanup(func() { silent.Close() })
 	up := newProvider(t, mockProvider(t, "mock-a"))
-	_, g, _ := gatewayFor(t, fmt.Sprintf(`"redis":{"addr":%q,"timeout":"5s"}`, silent.Addr()), []string{at(up, "")},
+	_, g, logs := gatewayFor(t, fmt.Sprintf(`"redis":{"addr":%q,"timeout":"5s"}`, silent.Addr()), []string{at(up, "")},
 		cached("fast", `{"ttl":"1m"}`))
 	base, stop := context.WithCancelCause(context.Background())
 	srv := httptest.NewUnstartedServer(g)
@@ -279,5 +282,8 @@ func TestAStopDuringTheCacheLookupEndsTheWait(t *testing.T) {
 	}
 	if len(up.requests()) != 0 {
 		t.Error("a stopping gateway asked the provider")
+	}
+	if l := logLines(t, logs, "chat completion")[0]; l["cache"] == "unavailable" || l["attempts"] != nil {
+		t.Errorf("the stop was logged as Redis's failure, or an attempt followed: %v", l)
 	}
 }

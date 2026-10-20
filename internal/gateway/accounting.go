@@ -33,11 +33,12 @@ func upstreamBody(req *openai.ChatRequest, t config.Target) (body []byte, strip 
 
 // unasked is what to send in place of a stream's event when the gateway asked for the usage the client didn't: that
 // usage taken out, and nothing else. A chunk that carries a usage object and no choices (OpenAI's last chunk, which a
-// client that didn't ask never gets), and isn't an error, is dropped (nil). A usage member on any other chunk (the "usage": null OpenAI
-// puts on every chunk when asked, or a usage that comes with the last choices) is removed: the event's data line is
-// written again without it, its other lines (id:, event:, comments) as they were. Every other event goes as it came,
-// byte for byte. (The first version dropped every chunk with a usage member and no choices, even "usage": null, which
-// lost Azure's first chunk, and wrote every rewritten event as a lone data line; both found in the day-3 review.)
+// client that didn't ask never gets), and isn't an error, is dropped (nil). A usage member on any other chunk (the
+// "usage": null OpenAI puts on every chunk when asked, a usage that comes with the last choices, or one on an error)
+// is removed: the event's data line is written again without it, its other lines (id:, event:, comments) as they
+// were. Every other event goes as it came, byte for byte. (The first version dropped every chunk with a usage member
+// and no choices, even "usage": null, which lost Azure's first chunk, and wrote every rewritten event as a lone data
+// line; both found in the day-3 review.)
 func unasked(ev sseEvent) []byte {
 	if ev.data == nil || !bytes.Contains(ev.data, []byte(`"usage"`)) {
 		return ev.raw
@@ -48,7 +49,8 @@ func unasked(ev sseEvent) []byte {
 	return unaskedParsed(ev)
 }
 
-// usageNull ends every chunk OpenAI sends once the usage is asked for: its last member.
+// usageNull ends every chunk OpenAI sends once the usage is asked for, but the last (the usage's own): its last
+// member.
 var usageNull = []byte(`,"usage":null}`)
 
 // unaskedNull is unasked's fast path, for OpenAI's own shape: an event of one data line whose chunk ends with
@@ -191,7 +193,8 @@ func (g *Gateway) addTotals(r *http.Request, x *exchange, e usage.Entry) {
 // by Redis's timeout. A client that has left doesn't cancel it: it has its answer, and the writes are the gateway's.
 // The stop does: the answer is still in net/http's buffer until the handler returns, and a write to a hung Redis
 // mustn't hold it past the second the stop gives running requests (a suspicion of the day-3 review: with a timeout of
-// up to 10 s, it could).
+// up to 10 s, it could). If the client left first, the stop doesn't cut the write short (the cause is already the
+// client's), but then nobody is waiting for the answer, only the handler for the write, for at most the timeout.
 func (g *Gateway) afterAnswer(r *http.Request) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), g.cfg.Redis.Timeout)
 	stop := context.AfterFunc(r.Context(), func() {

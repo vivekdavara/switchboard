@@ -435,7 +435,8 @@ func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.pass(w, x, last.status, last.body, last.header)
-	if last.status == http.StatusOK {
+	// A 200 whose body is an error object is no completion (the day-3 second review): not counted, not kept.
+	if _, isError := streamError(last.body); last.status == http.StatusOK && !isError {
 		// Before the handler returns: an answer that fits net/http's buffer (a few KB) leaves only then, so this costs
 		// the client a Redis round trip, and in return the log line can say whether the totals were written.
 		g.account(r, x, last.body)
