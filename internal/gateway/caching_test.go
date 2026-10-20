@@ -1,10 +1,12 @@
 package gateway
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/vivekdavara/switchboard/internal/cache"
 	"github.com/vivekdavara/switchboard/internal/usage"
 )
 
@@ -177,5 +179,58 @@ func TestWhenRedisIsDownTheCacheIsAMiss(t *testing.T) {
 	if l := logLines(t, logs, "chat completion")[0]; l["cache"] != "unavailable" || l["cache_err"] == nil ||
 		l["cache_stored"] != nil {
 		t.Errorf("log: %v", l)
+	}
+}
+
+func TestAStreamOverTheEntryLimitIsntKept(t *testing.T) {
+	redis, _ := redisTotals(t)
+	// 1,100 chunks of about 1 KB: over cache.MaxEntryBytes (1 MiB) in all, each one far below it.
+	content := strings.Repeat("x", 1000)
+	events := make([]string, 0, 1101)
+	for range 1100 {
+		events = append(events, `data: {"id":"c","choices":[{"index":0,"delta":{"content":"`+content+`"}}]}`+"\n\n")
+	}
+	events = append(events, "data: [DONE]\n\n")
+	up := newProvider(t, streaming(events, 0, false))
+	small := newProvider(t, streaming(events[len(events)-2:], 0, false))
+	srv, _, logs := gatewayFor(t, redis, []string{at(up, ""), at(small, "")},
+		`{"name":"m","provider":"p0","cache":{"ttl":"1m"}}`, `{"name":"s","provider":"p1","cache":{"ttl":"1m"}}`)
+	for i := range 2 {
+		_, got, err := readStream(t, srv, askStream)
+		if err != nil || len(got) != 1101 {
+			t.Fatalf("request %d: %d events, %v", i+1, len(got), err)
+		}
+	}
+	if n := len(up.requests()); n != 2 {
+		t.Errorf("a stream over the limit was kept: the provider was asked %d times", n)
+	}
+	if l := logLines(t, logs, "chat completion")[0]; l["cache"] != "miss" || l["cache_stored"] != nil {
+		t.Errorf("log: %v", l)
+	}
+	// A small stream through the same code is kept, so the limit is what stopped the big one.
+	for range 2 {
+		readStream(t, srv, strings.Replace(askStream, `"m"`, `"s"`, 1))
+	}
+	if n := len(small.requests()); n != 1 {
+		t.Errorf("a small stream: the provider was asked %d times", n)
+	}
+}
+
+// keeping stops holding a stream's bytes once they pass the limit, rather than holding them all and having the
+// cache refuse them at the end (which TestAStreamOverTheEntryLimitIsntKept can't tell apart).
+func TestKeepingAStreamStopsAtTheLimit(t *testing.T) {
+	k := keeping{b: &bytes.Buffer{}}
+	k.add(make([]byte, cache.MaxEntryBytes-1))
+	k.add([]byte("x"))
+	if k.b == nil || k.b.Len() != cache.MaxEntryBytes {
+		t.Fatalf("exactly the limit is kept: %v", k.b)
+	}
+	k.add([]byte("y"))
+	if k.b != nil {
+		t.Errorf("one byte past the limit still kept")
+	}
+	k.add([]byte("z")) // and nothing after
+	if k.b != nil {
+		t.Error("kept again")
 	}
 }

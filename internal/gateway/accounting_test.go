@@ -217,3 +217,16 @@ func TestABrokenStreamIsNotCounted(t *testing.T) {
 		t.Errorf("%+v", rows)
 	}
 }
+
+func TestAChunkThatMentionsUsageButIsntAnObjectPassesAsItCame(t *testing.T) {
+	for _, data := range []string{
+		`{"choices":[],"usage":{"prompt_tokens":1},"usage":null}`, // a key twice: not one meaning, so not touched
+		`["usage"]`,
+		`"usage"`,
+	} {
+		ev := sseEvent{data: []byte(data), raw: []byte("data: " + data + "\n\n")}
+		if got := unasked(ev); string(got) != string(ev.raw) {
+			t.Errorf("%s became %q", data, got)
+		}
+	}
+}

@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +141,21 @@ func TestAPrefixIsMatchedAsItself(t *testing.T) {
 	rows, err := star.Report(ctx, Day(time.Now()))
 	if err != nil || len(rows) != 1 || rows[0].Completions != 1 {
 		t.Errorf("a prefix with a * reads only its own keys: %+v %v", rows, err)
+	}
+}
+
+func TestAReportSkipsKeysItCantSplitAndRefusesFieldsItCantRead(t *testing.T) {
+	rdb, prefix := redistest.Client(t)
+	totals := NewTotals(rdb, prefix)
+	ctx := context.Background()
+	rdb.HSet(ctx, prefix+"usage:2026-10-20:no-model", "completions", 1) // no ":" after the client
+	totals.Add(ctx, time.Date(2026, 10, 20, 1, 0, 0, 0, time.UTC), "c", "m", Entry{Completions: 3})
+	rows, err := totals.Report(ctx, "2026-10-20")
+	if err != nil || len(rows) != 1 || rows[0].Client != "c" || rows[0].Completions != 3 {
+		t.Errorf("%+v %v", rows, err)
+	}
+	rdb.HSet(ctx, prefix+"usage:2026-10-20:c:m", "prompt_tokens", "lots")
+	if _, err := totals.Report(ctx, "2026-10-20"); err == nil || !strings.Contains(err.Error(), "prompt_tokens") {
+		t.Errorf("a field that isn't a number: %v", err)
 	}
 }
