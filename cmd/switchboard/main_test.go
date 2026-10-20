@@ -216,6 +216,7 @@ retry budget 0.2 a request + 1 a second; circuit breaker after 5 failures, coold
 model fast (also gpt-4o-mini) -> mock-a as mock-small (weight 1); no fallback
 model smart -> mock-b as mock-large (weight 1), mock-a as mock-large (weight 0); up to 2 attempts
 model mock-small -> mock-a as mock-small (weight 1); no fallback
+no clients: no key is asked for
 `
 	if code != 0 || out.String() != want {
 		t.Errorf("exit %d:\n%s", code, out.String())
@@ -251,6 +252,13 @@ func TestBadInvocationsAndConfigsFail(t *testing.T) {
 		{[]string{"serve", "-config", "does-not-exist.json"}, 1, "no such file"},
 		{[]string{"check", "-config", bad}, 1, `"listen" appears twice`},
 		{[]string{"check", "-config", "../../configs/openai.example.json"}, 1, "OPENAI_API_KEY"},
+		{[]string{"keygen", "extra"}, 2, "usage"},
+		{[]string{"usage"}, 2, "usage"},
+		{[]string{"usage", "-config", "../../configs/local.json"}, 1, "names no redis"},
+		{[]string{"usage", "-config", "../../configs/clients.example.json", "-day", "2026-13-01"}, 2,
+			"not a date"},
+		{[]string{"check", "-config", "../../configs/local.json", "-day", "2026-10-20"}, 2,
+			"flag provided but not defined"},
 	} {
 		var errs bytes.Buffer
 		if code := run(context.Background(), tc.args, noEnv, io.Discard, &errs, nil); code != tc.code ||

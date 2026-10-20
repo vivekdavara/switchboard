@@ -2,6 +2,9 @@
 //
 //	switchboard serve -config FILE   serve until SIGINT or SIGTERM
 //	switchboard check -config FILE   load and check the configuration, print the routes, and exit
+//	switchboard keygen               print a new client key and the SHA-256 the configuration holds for it
+//	switchboard usage -config FILE [-day YYYY-MM-DD]
+//	                                 print a day's totals (UTC; today by default) per client and model from Redis
 //	switchboard version              print the version, the commit and the Go release, and exit
 //
 // The configuration is a JSON file (DESIGN.md, "Configuration"); provider keys come from the environment variables
@@ -25,12 +28,14 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/vivekdavara/switchboard/internal/config"
 	"github.com/vivekdavara/switchboard/internal/gateway"
+	"github.com/vivekdavara/switchboard/internal/usage"
 )
 
 func main() {
@@ -60,7 +65,8 @@ func main() {
 	os.Exit(run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr, nil))
 }
 
-const usage = "usage: switchboard serve -config FILE | check -config FILE | version"
+const usageLine = "usage: switchboard serve -config FILE | check -config FILE | keygen | " +
+	"usage -config FILE [-day YYYY-MM-DD] | version"
 
 // Server timeouts (DESIGN.md, "Timeouts and shutdown"). No WriteTimeout: a streamed answer can rightly take minutes.
 const (
@@ -77,30 +83,37 @@ const (
 func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer,
 	listening chan<- string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, usage)
+		fmt.Fprintln(stderr, usageLine)
 		return 2
 	}
 	switch args[0] {
-	case "version":
+	case "version", "keygen":
 		if len(args) != 1 {
-			fmt.Fprintln(stderr, usage)
+			fmt.Fprintln(stderr, usageLine)
 			return 2
+		}
+		if args[0] == "keygen" {
+			return keygen(stdout)
 		}
 		fmt.Fprintln(stdout, version())
 		return 0
-	case "serve", "check":
+	case "serve", "check", "usage":
 	default:
-		fmt.Fprintln(stderr, usage)
+		fmt.Fprintln(stderr, usageLine)
 		return 2
 	}
 	fs := flag.NewFlagSet("switchboard "+args[0], flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	path := fs.String("config", "", "the configuration file (JSON)")
+	var day *string
+	if args[0] == "usage" {
+		day = fs.String("day", time.Now().UTC().Format(time.DateOnly), "the day (UTC) to report")
+	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
 	if *path == "" || fs.NArg() > 0 {
-		fmt.Fprintln(stderr, usage)
+		fmt.Fprintln(stderr, usageLine)
 		return 2
 	}
 	cfg, err := config.Load(*path, getenv)
@@ -108,9 +121,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		fmt.Fprintln(stderr, "switchboard:", err)
 		return 1
 	}
-	if args[0] == "check" {
+	switch args[0] {
+	case "check":
 		printRoutes(stdout, cfg)
 		return 0
+	case "usage":
+		return report(ctx, cfg, *day, stdout, stderr)
 	}
 	return serve(ctx, cfg, slog.New(slog.NewJSONHandler(stderr, nil)), listening)
 }
@@ -140,7 +156,48 @@ func printRoutes(w io.Writer, cfg *config.Config) {
 		if m.MaxAttempts > 1 {
 			attempts = fmt.Sprintf("up to %d attempts", m.MaxAttempts)
 		}
-		fmt.Fprintf(w, "model %s%s -> %s; %s\n", m.Name, aliases, strings.Join(targets, ", "), attempts)
+		cache := ""
+		if m.Cache != nil {
+			cache = fmt.Sprintf("; cached for %s", m.Cache.TTL)
+			if m.Cache.Shared {
+				cache += ", shared by every client"
+			}
+		}
+		fmt.Fprintf(w, "model %s%s -> %s; %s%s\n", m.Name, aliases, strings.Join(targets, ", "), attempts, cache)
+	}
+	printDay3(w, cfg)
+}
+
+// printDay3 prints Redis, the clients and the prices (day 3), when the file has them.
+func printDay3(w io.Writer, cfg *config.Config) {
+	if r := cfg.Redis; r != nil {
+		onError := "allow"
+		if r.RefuseWhenDown {
+			onError = "refuse"
+		}
+		fmt.Fprintf(w, "redis %s, prefix %q, timeout %s, rate-limited requests when it is down: %s\n", r.Addr, r.Prefix,
+			r.Timeout, onError)
+	}
+	if len(cfg.Clients) == 0 {
+		fmt.Fprintln(w, "no clients: no key is asked for")
+	}
+	for _, c := range cfg.Clients {
+		limit := "no rate limit"
+		if l := c.RateLimit; l != nil {
+			limit = fmt.Sprintf("%g requests a minute, %d at once", l.PerMinute, l.Burst)
+		}
+		fmt.Fprintf(w, "client %s: %s\n", c.Name, limit)
+	}
+	var priced []string
+	for k := range cfg.Prices() {
+		priced = append(priced, k[0]+"\x00"+k[1])
+	}
+	slices.Sort(priced)
+	for _, k := range priced {
+		provider, model, _ := strings.Cut(k, "\x00")
+		p, _ := cfg.Price(provider, model)
+		fmt.Fprintf(w, "price %s %s: $%s in, $%s out per million tokens\n", provider, model,
+			usage.USD(p.Input*1_000_000), usage.USD(p.Output*1_000_000))
 	}
 }
 

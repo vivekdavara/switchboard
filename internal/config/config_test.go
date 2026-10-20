@@ -36,6 +36,12 @@ func TestTheCheckedInConfigsLoad(t *testing.T) {
 		t.Error("routes are case-sensitive")
 	}
 
+	// The day-3 example: clients (the hashes of keys nobody has), Redis, a cache and prices.
+	if c, err := Load("../../configs/clients.example.json", env(nil)); err != nil || len(c.Clients) != 2 ||
+		c.Redis == nil || len(c.Prices()) != 3 {
+		t.Errorf("clients.example.json: %v %+v", err, c)
+	}
+
 	// The live example needs its key, and only from the environment.
 	if _, err := Load("../../configs/openai.example.json", env(nil)); err == nil ||
 		!strings.Contains(err.Error(), "OPENAI_API_KEY") {

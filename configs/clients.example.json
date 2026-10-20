@@ -1,0 +1,25 @@
+{
+  "listen": "127.0.0.1:8108",
+  "redis": {"addr": "127.0.0.1:6382", "timeout": "100ms", "on_error": "allow"},
+  "clients": [
+    {"name": "alice", "key_sha256": "5b57e588e29a7945c4079881e696faeee1af133a26541a37307a520631e22fa7", "rate_limit": {"requests_per_minute": 60, "burst": 10}},
+    {"name": "bob", "key_sha256": "8874f418e9540217d7d02f91338b3dab33e1bb5005f5cdf43e79aac0fea9151c"}
+  ],
+  "providers": [
+    {"name": "mock-a", "base_url": "http://127.0.0.1:8118/v1", "timeout": "10s"},
+    {"name": "mock-b", "base_url": "http://127.0.0.1:8119/v1", "timeout": "10s"}
+  ],
+  "models": [
+    {"name": "fast", "aliases": ["gpt-4o-mini"], "provider": "mock-a", "upstream_model": "mock-small",
+      "cache": {"ttl": "10m"}},
+    {"name": "smart", "targets": [
+      {"provider": "mock-b", "upstream_model": "mock-large", "weight": 1},
+      {"provider": "mock-a", "upstream_model": "mock-large", "weight": 0}
+    ]}
+  ],
+  "prices": [
+    {"provider": "mock-a", "upstream_model": "mock-small", "input_per_million": 0.15, "output_per_million": 0.6},
+    {"provider": "mock-a", "upstream_model": "mock-large", "input_per_million": 2.5, "output_per_million": 10},
+    {"provider": "mock-b", "upstream_model": "mock-large", "input_per_million": 2.5, "output_per_million": 10}
+  ]
+}
