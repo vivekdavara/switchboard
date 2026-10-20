@@ -197,3 +197,23 @@ func TestAnEntryIsAddedInOneTransaction(t *testing.T) {
 		t.Errorf("%q: one MULTI, the fields that changed, the expiry", hook.seen)
 	}
 }
+
+// twice is a Redis whose SCAN returns every key two times, as SCAN may (a rehash during the scan).
+type twice struct {
+	redis.Cmdable
+}
+
+func (t twice) Scan(ctx context.Context, cursor uint64, match string, count int64) *redis.ScanCmd {
+	keys := t.Cmdable.Keys(ctx, match).Val()
+	return redis.NewScanCmdResult(append(keys, keys...), 0, nil)
+}
+
+func TestAKeyScannedTwiceIsCountedOnce(t *testing.T) {
+	rdb, prefix := redistest.Client(t)
+	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	NewTotals(rdb, prefix).Add(context.Background(), at, "c", "m", Entry{Completions: 2, Cost: 5})
+	rows, err := NewTotals(twice{rdb}, prefix).Report(context.Background(), "2026-10-20")
+	if err != nil || len(rows) != 1 || rows[0].Completions != 2 || rows[0].Cost != 5 {
+		t.Errorf("%+v %v", rows, err)
+	}
+}

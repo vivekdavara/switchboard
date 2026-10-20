@@ -496,7 +496,7 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (234 test and fuzz functions, 156 of them
+`make check` runs gofmt, `go vet` and `go test -race` over every package (235 test and fuzz functions, 156 of them
 before day 3; about 21 s, with the test Redis on 6382 started if none answers; coverage 96.7% across packages with
 `go test -coverpkg=./...`, and on their own: gateway 98.0%, config 99.2%, usage 95.7%, ratelimit 92.3%, cache 87.5%
 (its misses are errors `json.Compact` and `json.Marshal` can't return there). CI runs the same on Ubuntu 24.04 with
@@ -543,9 +543,10 @@ two bugs in them, kept as `review2_d3_*_test.go`: an error event carrying a usag
 dropped (so a first event read as no answer, and a mid-stream error never reached the client), and a usage read
 before the commit from an attempt that then failed was counted for the next attempt's answer. Its suspicions gave two
 more fixes (a stop during the cache lookup logged as Redis's failure, then an attempt; a 200 that is an error still
-counted) and its untested branches four tests. Three of its one-line survivors remain, none testable here: a client
-leaving during the rate limit (net/http notices only once the body is read, and the limit comes first), a stop during
-the cache write (it needs a Redis that answers reads and hangs on writes), and SCAN's dedupe.
+counted) and its untested branches four tests. Two of its one-line survivors remain, neither testable here: a client
+leaving during the rate limit (net/http notices only once the body is read, and the limit comes first), and a stop
+during the cache write (it needs a Redis that answers reads and hangs on writes). SCAN's dedupe is tested with a fake
+whose SCAN returns every key twice.
 
 Day 2's mutation checks (the commit messages list them): 18 mechanisms of the fallback, the router, the budget and
 the breaker broken one at a time, 16 caught at first (the budget's expiry is caught now; a redundant "stop" flag was
