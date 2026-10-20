@@ -2,9 +2,13 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"net"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vivekdavara/switchboard/internal/cache"
 	"github.com/vivekdavara/switchboard/internal/usage"
@@ -246,5 +250,33 @@ func TestA200ThatIsAnErrorIsntKept(t *testing.T) {
 	}
 	if n := len(up.requests()); n != 2 {
 		t.Errorf("the provider was asked %d times", n)
+	}
+}
+
+func TestAStopDuringTheCacheLookupEndsTheWait(t *testing.T) {
+	silent, err := net.Listen("tcp", "127.0.0.1:0") // accepts connections, never answers
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { silent.Close() })
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	_, g, _ := gatewayFor(t, fmt.Sprintf(`"redis":{"addr":%q,"timeout":"5s"}`, silent.Addr()), []string{at(up, "")},
+		cached("fast", `{"ttl":"1m"}`))
+	base, stop := context.WithCancelCause(context.Background())
+	srv := httptest.NewUnstartedServer(g)
+	srv.Config.BaseContext = func(net.Listener) context.Context { return base }
+	srv.Start()
+	defer srv.Close()
+	time.AfterFunc(100*time.Millisecond, func() { stop(ErrShutdown) })
+	began := time.Now()
+	resp, b := send(t, srv, ask)
+	if _, code, _, _ := errorOf(t, b); resp.StatusCode != 503 || code != "shutting_down" {
+		t.Errorf("%d %s", resp.StatusCode, b)
+	}
+	if took := time.Since(began); took > 2*time.Second {
+		t.Errorf("took %s: the stop should end the lookup, not Redis's 5 s timeout", took)
+	}
+	if len(up.requests()) != 0 {
+		t.Error("a stopping gateway asked the provider")
 	}
 }

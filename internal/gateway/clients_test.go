@@ -1,12 +1,14 @@
 package gateway
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -290,5 +292,33 @@ func TestARedisThatNeverAnswersCostsAtMostItsTimeout(t *testing.T) {
 	}
 	if line := logLines(t, logs, "chat completion")[0]; line["rate_limit"] != "unavailable" {
 		t.Errorf("log: %v", line)
+	}
+}
+
+func TestAStopDuringTheRateLimitIsShuttingDownNotRedis(t *testing.T) {
+	silent, err := net.Listen("tcp", "127.0.0.1:0") // accepts connections, never answers
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { silent.Close() })
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	_, g, logs := gatewayFor(t, fmt.Sprintf(`"redis":{"addr":%q,"timeout":"5s","on_error":"refuse"},`, silent.Addr())+
+		clients("alice:60:1"), []string{at(up, "")}, "fast=p0/mock-small")
+	base, stop := context.WithCancelCause(context.Background())
+	srv := httptest.NewUnstartedServer(g)
+	srv.Config.BaseContext = func(net.Listener) context.Context { return base }
+	srv.Start()
+	defer srv.Close()
+	time.AfterFunc(100*time.Millisecond, func() { stop(ErrShutdown) })
+	began := time.Now()
+	resp, b := send(t, srv, ask, as("alice")...)
+	if _, code, _, _ := errorOf(t, b); resp.StatusCode != 503 || code != "shutting_down" {
+		t.Errorf("%d %s", resp.StatusCode, b)
+	}
+	if took := time.Since(began); took > 2*time.Second {
+		t.Errorf("took %s: the stop should end the wait, not Redis's 5 s timeout", took)
+	}
+	if l := logLines(t, logs, "chat completion")[0]; l["rate_limit"] != nil {
+		t.Errorf("logged as Redis's failure: %v", l)
 	}
 }

@@ -121,7 +121,9 @@ func Day(at time.Time) string { return at.UTC().Format(time.DateOnly) }
 var fieldsOf = []string{"completions", "cache_hits", "prompt_tokens", "completion_tokens", "cost_picousd", "unpriced",
 	"no_usage"}
 
-// Add adds an entry to the totals, in one round trip (a transaction, so a reader never sees half of it).
+// Add adds an entry to the totals, in one round trip: a MULTI, so no report sees a request half added. (A MULTI isn't
+// all or nothing: a field that isn't a number would fail its own HINCRBY and not the others'. Only Redis's own
+// tools could make one.)
 func (t *Totals) Add(ctx context.Context, at time.Time, client, model string, e Entry) error {
 	key := t.key(Day(at), client, model)
 	_, err := t.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
@@ -147,8 +149,15 @@ type Row struct {
 func (t *Totals) Report(ctx context.Context, day string) ([]Row, error) {
 	var rows []Row
 	head := t.prefix + "usage:" + day + ":"
+	seen := map[string]bool{}
 	iter := t.rdb.Scan(ctx, 0, escapeGlob(head)+"*", 1000).Iterator()
 	for iter.Next(ctx) {
+		// SCAN may return a key more than once (Redis's documentation says so: a rehash during the scan); a key read
+		// twice would be counted twice (a suspicion of the day-3 review).
+		if seen[iter.Val()] {
+			continue
+		}
+		seen[iter.Val()] = true
 		client, model, ok := strings.Cut(strings.TrimPrefix(iter.Val(), head), ":")
 		if !ok {
 			continue

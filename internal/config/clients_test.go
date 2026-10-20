@@ -243,3 +243,32 @@ func TestMicrodollarsAreExact(t *testing.T) {
 		}
 	}
 }
+
+func TestARateLimitsBoundsAndDefaults(t *testing.T) {
+	limit := func(rl string) (*RateLimit, error) {
+		c, err := Parse([]byte(`{"redis":{"addr":"h:1"},"clients":[{"name":"c","key_sha256":"`+hashOf("k")+
+			`","rate_limit":`+rl+`}],"providers":[{"name":"p","base_url":"http://h/v1"}],`+
+			`"models":[{"name":"m","provider":"p"}]}`), env(nil))
+		if err != nil {
+			return nil, err
+		}
+		return c.Clients[0].RateLimit, nil
+	}
+	for rl, want := range map[string]RateLimit{
+		`{"requests_per_minute":0.5}`:                     {0.5, 1}, // rounded up: a burst of 0 would refuse everything
+		`{"requests_per_minute":1.2}`:                     {1.2, 2},
+		`{"requests_per_minute":60}`:                      {60, 60},
+		`{"requests_per_minute":0.0001,"burst":4}`:        {0.0001, 4}, // 40,000 minutes to refill
+		`{"requests_per_minute":1000000,"burst":1000000}`: {1_000_000, 1_000_000},
+	} {
+		if got, err := limit(rl); err != nil || *got != want {
+			t.Errorf("%s: %+v %v, want %+v", rl, got, err, want)
+		}
+	}
+	for _, rl := range []string{`{"requests_per_minute":0.0001,"burst":5}`, `{"requests_per_minute":1e-9}`,
+		`{"requests_per_minute":0.000001,"burst":1000000}`} {
+		if _, err := limit(rl); err == nil || !strings.Contains(err.Error(), "more than 30 days to refill") {
+			t.Errorf("%s: %v", rl, err)
+		}
+	}
+}

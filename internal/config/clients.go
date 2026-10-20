@@ -30,6 +30,7 @@ const (
 const (
 	MaxRequestsPerMinute = 1_000_000
 	MaxBurst             = 1_000_000
+	MaxRefillMinutes     = 30 * 24 * 60 // the longest a bucket may take to refill: 30 days
 	MaxCacheTTL          = 30 * 24 * time.Hour
 	MaxRedisTimeout      = 10 * time.Second
 	// MaxPricePerMillion bounds a price, in dollars per million tokens, so a cost can't overflow (DESIGN.md,
@@ -203,6 +204,13 @@ func parseRateLimit(raw json.RawMessage) (*RateLimit, error) {
 		l.Burst = int(math.Ceil(l.PerMinute)) // a minute's requests at once
 	} else if l.Burst < 1 || l.Burst > MaxBurst {
 		return nil, fmt.Errorf("burst must be an integer from 1 to %d", MaxBurst)
+	}
+	// The bucket's span (the time a burst takes to refill) is kept in whole microseconds in Redis's Lua, whose
+	// numbers are doubles: exact below 2^53. A bound of 30 days keeps it far below that, and Go's int64 of
+	// nanoseconds too (a rate of 10^-9 a minute overflowed both before; found in the day-3 review).
+	if float64(l.Burst)/l.PerMinute > MaxRefillMinutes {
+		return nil, fmt.Errorf("a burst of %d at %g requests a minute takes more than 30 days to refill", l.Burst,
+			l.PerMinute)
 	}
 	return l, nil
 }

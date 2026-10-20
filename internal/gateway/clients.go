@@ -13,6 +13,7 @@ import (
 
 	"github.com/vivekdavara/switchboard/internal/config"
 	"github.com/vivekdavara/switchboard/internal/openai"
+	"github.com/vivekdavara/switchboard/internal/ratelimit"
 )
 
 // Day 3's front door: client keys and rate limits (DESIGN.md, "Client keys" and "Rate limits"). A request must carry
@@ -45,6 +46,30 @@ func NewRedis(c *config.Redis) *redis.Client {
 type quiet struct{}
 
 func (quiet) Printf(context.Context, string, ...any) {}
+
+// untilDone runs f, a Redis call bounded by its own timeout, and returns early with the cause if ctx ends first.
+// go-redis stops a command at its context's deadline but not when the context is cancelled (it doesn't watch Done), so
+// a stop or a client leaving would otherwise wait for a hung Redis's whole timeout, up to 10 s: past the second the
+// stop gives running requests to write their 503s (found by TestAStopDuringTheRateLimitIsShuttingDownNotRedis). f
+// goes on in its goroutine until its own timeout; its result is dropped.
+func untilDone[T any](ctx context.Context, f func() (T, error)) (T, error) {
+	type result struct {
+		v   T
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		v, err := f()
+		done <- result{v, err}
+	}()
+	select {
+	case res := <-done:
+		return res.v, res.err
+	case <-ctx.Done():
+		var zero T
+		return zero, context.Cause(ctx)
+	}
+}
 
 type clientKey struct{}
 
@@ -107,7 +132,20 @@ func bearer(h string) (string, bool) {
 func (g *Gateway) rateLimit(w http.ResponseWriter, r *http.Request, x *exchange, cl *config.Client) bool {
 	ctx, cancel := context.WithTimeout(r.Context(), g.cfg.Redis.Timeout)
 	defer cancel()
-	d, err := g.limiter.Take(ctx, cl.Name, *cl.RateLimit)
+	d, err := untilDone(r.Context(), func() (ratelimit.Decision, error) {
+		return g.limiter.Take(ctx, cl.Name, *cl.RateLimit)
+	})
+	if err != nil && r.Context().Err() != nil {
+		// Not Redis's fault: the gateway is stopping, or the client left (a suspicion of the day-3 review: with
+		// on_error refuse, a stop during the check was answered rate_limit_unavailable).
+		if context.Cause(r.Context()) == ErrShutdown {
+			g.fail(w, x, openai.Errorf(http.StatusServiceUnavailable, openai.TypeServer, "", "shutting_down",
+				"the gateway is shutting down; retry"), err)
+			return false
+		}
+		x.status, x.err = StatusClientClosed, err
+		panic(http.ErrAbortHandler)
+	}
 	if err != nil {
 		x.rateLimit, x.redisErr = "unavailable", err
 		if g.cfg.Redis.RefuseWhenDown {

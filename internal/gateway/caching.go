@@ -42,7 +42,15 @@ func (g *Gateway) lookup(w http.ResponseWriter, r *http.Request, x *exchange, re
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), g.cfg.Redis.Timeout)
 	defer cancel()
-	e, ok, err := g.cache.Get(ctx, key)
+	type got struct {
+		e  cache.Entry
+		ok bool
+	}
+	res, err := untilDone(r.Context(), func() (got, error) {
+		e, ok, err := g.cache.Get(ctx, key)
+		return got{e, ok}, err
+	})
+	e, ok := res.e, res.ok
 	switch {
 	case err != nil:
 		x.cache, x.cacheErr = "unavailable", err
