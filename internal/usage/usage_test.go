@@ -3,8 +3,11 @@ package usage
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 
 	"github.com/vivekdavara/switchboard/internal/config"
 	"github.com/vivekdavara/switchboard/internal/redistest"
@@ -20,6 +23,8 @@ func TestTheUsageOfAnAnswer(t *testing.T) {
 		{`{"usage":{"prompt_tokens":0,"completion_tokens":0}}`, Usage{}, true},
 		{`{"usage":{"prompt_tokens":1000000000,"completion_tokens":1}}`, Usage{1_000_000_000, 1}, true},
 		{`{"usage":{"prompt_tokens":1000000001,"completion_tokens":1}}`, Usage{}, false},
+		{`{"usage":{"prompt_tokens":1,"completion_tokens":1000000001}}`, Usage{}, false},
+		{`{"usage":{"prompt_tokens":1,"completion_tokens":-1}}`, Usage{}, false},
 		{`{"usage":{"prompt_tokens":-1,"completion_tokens":1}}`, Usage{}, false},
 		{`{"usage":{"prompt_tokens":1.5,"completion_tokens":1}}`, Usage{}, false},
 		{`{"usage":{"prompt_tokens":"5","completion_tokens":1}}`, Usage{}, false},
@@ -157,5 +162,38 @@ func TestAReportSkipsKeysItCantSplitAndRefusesFieldsItCantRead(t *testing.T) {
 	rdb.HSet(ctx, prefix+"usage:2026-10-20:c:m", "prompt_tokens", "lots")
 	if _, err := totals.Report(ctx, "2026-10-20"); err == nil || !strings.Contains(err.Error(), "prompt_tokens") {
 		t.Errorf("a field that isn't a number: %v", err)
+	}
+}
+
+// names records the commands of every pipeline a client sends.
+type names struct {
+	mu   sync.Mutex
+	seen [][]string
+}
+
+func (n *names) DialHook(next redis.DialHook) redis.DialHook          { return next }
+func (n *names) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+func (n *names) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		var got []string
+		for _, c := range cmds {
+			got = append(got, c.Name())
+		}
+		n.mu.Lock()
+		n.seen = append(n.seen, got)
+		n.mu.Unlock()
+		return next(ctx, cmds)
+	}
+}
+
+func TestAnEntryIsAddedInOneTransaction(t *testing.T) {
+	rdb, prefix := redistest.Client(t)
+	hook := &names{}
+	rdb.AddHook(hook)
+	NewTotals(rdb, prefix).Add(context.Background(), time.Now(), "c", "m",
+		Entry{Completions: 1, Tokens: Usage{1, 2}, Cost: 3})
+	if len(hook.seen) != 1 || strings.Join(hook.seen[0], " ") !=
+		"multi hincrby hincrby hincrby hincrby expire exec" {
+		t.Errorf("%q: one MULTI, the fields that changed, the expiry", hook.seen)
 	}
 }

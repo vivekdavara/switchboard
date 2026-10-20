@@ -155,18 +155,26 @@ func (g *Gateway) rateLimit(w http.ResponseWriter, r *http.Request, x *exchange,
 		}
 		return true
 	}
-	h := w.Header()
-	h.Set("X-Ratelimit-Limit-Requests", strconv.Itoa(d.Limit))
-	h.Set("X-Ratelimit-Remaining-Requests", strconv.Itoa(d.Remaining))
-	h.Set("X-Ratelimit-Reset-Requests", d.Reset.Round(time.Millisecond).String())
+	limitHeaders(w.Header(), d)
 	if d.Allowed {
 		return true
 	}
 	x.rateLimit = "refused"
-	h.Set("Retry-After", strconv.FormatFloat(math.Ceil(d.RetryAfter.Seconds()), 'f', 0, 64))
-	h.Set("Retry-After-Ms", strconv.FormatInt((d.RetryAfter+time.Millisecond-1).Milliseconds(), 10))
 	g.fail(w, x, openai.Errorf(http.StatusTooManyRequests, openai.TypeRateLimit, "", "rate_limit_exceeded",
 		"rate limit reached for %s (%d requests at once, %g a minute); retry after %s", cl.Name, cl.RateLimit.Burst,
 		cl.RateLimit.PerMinute, d.RetryAfter.Round(time.Millisecond)), nil)
 	return false
+}
+
+// limitHeaders are a decision's headers: the bucket's capacity, the whole requests left and the time until it is
+// full; and for a refusal, the wait, rounded up, in seconds and in milliseconds (a client that waits less is refused
+// again).
+func limitHeaders(h http.Header, d ratelimit.Decision) {
+	h.Set("X-Ratelimit-Limit-Requests", strconv.Itoa(d.Limit))
+	h.Set("X-Ratelimit-Remaining-Requests", strconv.Itoa(d.Remaining))
+	h.Set("X-Ratelimit-Reset-Requests", d.Reset.Round(time.Millisecond).String())
+	if !d.Allowed {
+		h.Set("Retry-After", strconv.FormatFloat(math.Ceil(d.RetryAfter.Seconds()), 'f', 0, 64))
+		h.Set("Retry-After-Ms", strconv.FormatInt((d.RetryAfter+time.Millisecond-1).Milliseconds(), 10))
+	}
 }

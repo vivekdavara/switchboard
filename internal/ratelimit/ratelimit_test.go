@@ -216,3 +216,18 @@ func closedPort(t *testing.T) string {
 	ln.Close()
 	return addr
 }
+
+// A bucket that has been full for a while holds its burst, no more: the time it sat full is no credit.
+func TestAFullBucketGivesNoCreditForTheTimeItSatFull(t *testing.T) {
+	l, c, _ := limiter(t)
+	limit := config.RateLimit{PerMinute: 60, Burst: 1} // one a second
+	take(t, l, "c", limit)
+	c.advance(1500 * time.Millisecond) // full again for the last half second
+	if d := take(t, l, "c", limit); !d.Allowed {
+		t.Fatalf("a full bucket: %+v", d)
+	}
+	c.advance(500 * time.Millisecond)
+	if d := take(t, l, "c", limit); d.Allowed || d.RetryAfter != 500*time.Millisecond {
+		t.Errorf("half a second after the last request: %+v; the half second it sat full before counts for nothing", d)
+	}
+}

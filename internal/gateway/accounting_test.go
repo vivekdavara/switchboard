@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -228,5 +229,64 @@ func TestAChunkThatMentionsUsageButIsntAnObjectPassesAsItCame(t *testing.T) {
 		if got := unasked(ev); string(got) != string(ev.raw) {
 			t.Errorf("%s became %q", data, got)
 		}
+	}
+}
+
+func TestUnaskedKeepsAChunkWithChoicesOfAnyKindAndCompactsOnlyWhatSpansLines(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		// choices that aren't a list are choices: only the usage goes.
+		{`data: {"choices":"x","usage":{"prompt_tokens":1,"completion_tokens":1}}` + "\n\n",
+			`data: {"choices":"x"}` + "\n\n"},
+		// A value spread over two data lines can't go on one as it is: compacted.
+		{"data: {\"choices\":[\ndata: {\"index\":0}],\"usage\":null}\n\n", `data: {"choices":[{"index":0}]}` + "\n\n"},
+		// One line: everything but the usage as it came, spaces included.
+		{`data: {"choices":[{"index": 0}], "usage":null}` + "\n\n", `data: {"choices":[{"index": 0}]}` + "\n\n"},
+		// A CRLF event keeps its other lines' endings; the data line is written with \n.
+		{"id: 1\r\ndata: {\"choices\":[1],\"usage\":null}\r\n\r\n", "id: 1\r\ndata: {\"choices\":[1]}\n\r\n"},
+	} {
+		r := newEventReader(strings.NewReader(tc.raw), 1<<20)
+		ev, err := r.next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(unasked(ev)); got != tc.want {
+			t.Errorf("%q:\n got %q\nwant %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestTheLastUsageInAStreamCounts(t *testing.T) {
+	events := []string{
+		`data: {"id":"c","choices":[{"index":0,"delta":{"content":"Hi"}}],"usage":{"prompt_tokens":3,` +
+			`"completion_tokens":1}}` + "\n\n", // a running count, as vLLM's continuous usage sends
+		`data: {"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,` +
+			`"completion_tokens":2}}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+	up := newProvider(t, streaming(events, 0, false))
+	srv, _, logs := gatewayFor(t, "", []string{at(up, "")}, "m=p0/x")
+	readStream(t, srv, askStream[:len(askStream)-1]+`,"stream_options":{"include_usage":true}}`)
+	if l := logLines(t, logs, "chat completion")[0]; l["completion_tokens"] != 2.0 {
+		t.Errorf("log: %v", l)
+	}
+}
+
+// The totals are added, and an answer kept, even when the client has gone by then: it has its answer, and they are
+// the gateway's.
+func TestTheTotalsAndTheCacheOutliveTheClient(t *testing.T) {
+	redis, totals := redisTotals(t)
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	_, g, _ := gatewayFor(t, redis, []string{at(up, "")}, cached("fast", `{"ttl":"1m"}`))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := httptest.NewRequestWithContext(ctx, "POST", "/v1/chat/completions", nil)
+	x := &exchange{began: time.Now(), route: "fast", provider: "p0", upstreamModel: "mock-small"}
+	g.addTotals(r, x, usage.Entry{Completions: 1})
+	g.store(r, x, "k", time.Minute, []byte(`{"id":"x"}`))
+	if x.totalsErr != nil || x.cacheErr != nil || !x.cacheStored {
+		t.Errorf("%v %v %v", x.totalsErr, x.cacheErr, x.cacheStored)
+	}
+	if rows := today(t, totals); len(rows) != 1 || rows[0].Completions != 1 {
+		t.Errorf("%+v", rows)
 	}
 }

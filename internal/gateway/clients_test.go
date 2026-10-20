@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vivekdavara/switchboard/internal/ratelimit"
 	"github.com/vivekdavara/switchboard/internal/redistest"
 )
 
@@ -320,5 +321,33 @@ func TestAStopDuringTheRateLimitIsShuttingDownNotRedis(t *testing.T) {
 	}
 	if l := logLines(t, logs, "chat completion")[0]; l["rate_limit"] != nil {
 		t.Errorf("logged as Redis's failure: %v", l)
+	}
+}
+
+func TestTheLimitsHeadersRoundTheWaitUp(t *testing.T) {
+	for _, tc := range []struct {
+		d                                     ratelimit.Decision
+		limit, remaining, reset, secs, millis string
+	}{
+		{ratelimit.Decision{Allowed: true, Limit: 10, Remaining: 9, Reset: time.Second}, "10", "9", "1s", "", ""},
+		{ratelimit.Decision{Allowed: true, Limit: 2, Remaining: 0, Reset: 1999600 * time.Microsecond}, "2", "0", "2s",
+			"", ""},
+		{ratelimit.Decision{Limit: 1, RetryAfter: 999500 * time.Microsecond, Reset: 1500 * time.Millisecond}, "1", "0",
+			"1.5s", "1", "1000"},
+		{ratelimit.Decision{Limit: 1, RetryAfter: 1001 * time.Microsecond, Reset: time.Second}, "1", "0", "1s", "1",
+			"2"},
+		{ratelimit.Decision{Limit: 1, RetryAfter: 2 * time.Second, Reset: 2 * time.Second}, "1", "0", "2s", "2",
+			"2000"},
+		{ratelimit.Decision{Limit: 1, RetryAfter: 2*time.Second + time.Microsecond, Reset: 3 * time.Second}, "1", "0",
+			"3s", "3", "2001"},
+	} {
+		h := http.Header{}
+		limitHeaders(h, tc.d)
+		got := []string{h.Get("X-Ratelimit-Limit-Requests"), h.Get("X-Ratelimit-Remaining-Requests"),
+			h.Get("X-Ratelimit-Reset-Requests"), h.Get("Retry-After"), h.Get("Retry-After-Ms")}
+		want := []string{tc.limit, tc.remaining, tc.reset, tc.secs, tc.millis}
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("%+v: %q, want %q", tc.d, got, want)
+		}
 	}
 }

@@ -146,7 +146,8 @@ func TestAFinishedStreamIsKeptAndABrokenOneIsNot(t *testing.T) {
 	resp1, first, err1 := readStream(t, srv, askStream)
 	resp2, second, err2 := readStream(t, srv, askStream)
 	if err1 != nil || err2 != nil || resp1.Header.Get("X-Switchboard-Cache") != "miss" ||
-		resp2.Header.Get("X-Switchboard-Cache") != "hit" || resp2.Header.Get("Content-Type") != "text/event-stream" {
+		resp2.Header.Get("X-Switchboard-Cache") != "hit" || resp2.Header.Get("Content-Type") != "text/event-stream" ||
+		resp2.Header.Get("Cache-Control") != "no-cache" || resp2.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("%v %v %v %v", err1, err2, resp1.Header, resp2.Header)
 	}
 	if len(first) != 35 || len(second) != len(first) {
