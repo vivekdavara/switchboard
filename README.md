@@ -7,29 +7,40 @@ routing by weights and aliases, fallback with retry budgets and circuit breakers
 response caching, and token and cost accounting, each measured against local mock providers that simulate latency
 and errors.
 
-**Status: day 2 of 5.** Day 1 built the request path: strict request reading, routing by model, forwarding with the
+**Status: day 3 of 5.** Day 1 built the request path: strict request reading, routing by model, forwarding with the
 provider's key, and a fixed mapping of every provider answer and failure to what the client gets, with a
 deterministic mock provider, a graceful shutdown, a demo of the real binaries and a check with the official OpenAI
 Python SDK. Day 2 puts weighted targets and aliases behind each model, falls back across them (never resending to a
 provider that may already have done the work), bounds the extra load with a retry budget, skips failing providers
 with a circuit breaker each, and streams: server-sent events relayed one at a time, with fallback until the first
-event and an error event after it. Day 3 adds client keys, rate limits, caching and cost accounting. See
-[DESIGN.md](DESIGN.md) for the specification and the plan.
+event and an error event after it. Day 3 puts client keys in front (the file holds only their SHA-256), a token
+bucket per client in Redis (one Lua script, Redis's clock, a 429 the OpenAI SDK waits out by itself), a response
+cache per model (answers only, per client unless shared), and accounting: every completion's tokens from the
+provider's own `usage` (for a stream whose client didn't ask, the gateway asks and takes it out again), priced in
+integer picodollars, and daily totals per client. See [DESIGN.md](DESIGN.md) for the specification and the plan.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    C["client<br/>(OpenAI SDK, curl)"] -->|"POST /v1/chat/completions"| G
+    C["client<br/>(OpenAI SDK, curl)"] -->|"POST /v1/chat/completions<br/>Authorization: Bearer key"| K
     subgraph G["switchboard (127.0.0.1:8108)"]
         direction LR
-        P["read and check<br/>the body"] --> R["route: model or alias →<br/>targets in weighted order"]
-        R --> T{"next target:<br/>breaker allows?<br/>budget allows a retry?"}
+        K["client key<br/>(401)"] --> Q["rate limit<br/>(429)"]
+        Q --> P["read and check<br/>the body"]
+        P --> R["route: model or alias →<br/>targets in weighted order"]
+        R --> H{"cached?"}
+        H -->|hit| M
+        H -->|miss| T{"next target:<br/>breaker allows?<br/>budget allows a retry?"}
         T -->|yes| F["forward: rewrite model,<br/>set the provider's key"]
         F -->|"failed or unanswered"| T
         F -->|"answered, or a stream's first event"| M["answer, or relay<br/>the stream event by event"]
+        M --> U["usage, cost, totals;<br/>keep the answer"]
         T -->|"no target left"| E["the last failure,<br/>or 503 circuit_open"]
     end
+    Q <-->|"one Lua script"| D[("Redis :6382<br/>buckets, cache, totals")]
+    H <--> D
+    U --> D
     F -->|HTTP| A["mockprovider mock-a :8118"]
     F -->|HTTP| B["mockprovider mock-b :8119"]
     F -.->|"opt-in, a key from the environment"| L["a live provider"]
@@ -43,16 +54,21 @@ flowchart LR
 | `internal/route` | The order one request tries a model's targets in: by weight, standbys last. |
 | `internal/budget` | The retry budget: retries as a share of requests over the last 10 seconds. |
 | `internal/breaker` | A circuit breaker per provider: closed, open, half-open with one probe; results kept to their generation. |
-| `internal/gateway` | The handler: check, route, try each target (the fallback loop), map; the SSE relay (`stream.go`). |
+| `internal/gateway` | The handler: check, route, try each target (the fallback loop), map; the SSE relay (`stream.go`); client keys and the rate-limit step (`clients.go`), the cache step (`caching.go`), accounting and taking a stream's usage back out (`accounting.go`). |
+| `internal/ratelimit` | A token bucket per client in Redis, kept as GCRA's one number, in one Lua script (day 3). |
+| `internal/cache` | Answers in Redis, keyed by the SHA-256 of everything that decides them (day 3). |
+| `internal/usage` | A completion's usage, its cost in integer picodollars, and daily totals per client and model in Redis (day 3). |
+| `internal/redistest` | Tests' Redis: the one `SWITCHBOARD_TEST_REDIS` names, under a prefix of each test's own. |
 | `internal/mock` | A mock provider: latency, errors, hangs and cut-offs, plain or streamed, deterministic given a seed. |
-| `cmd/switchboard` | `serve`, `check`, `version`; graceful shutdown. |
+| `cmd/switchboard` | `serve`, `check`, `keygen`, `usage`, `version`; graceful shutdown. |
 | `cmd/mockprovider` | The mock provider as a server. |
 
 ## Quick start
 
-Go 1.27 and curl. `make demo` builds everything, starts two mock providers and the gateway, sends nine requests
-through it with curl (and eleven more with the OpenAI Python SDK, if it is installed), checks each answer, and stops
-everything:
+Go 1.27, curl and Redis (`redis-server`; the demo uses the one on 127.0.0.1:6382 if one answers, and otherwise
+starts one and stops it after). `make demo` builds everything, starts two mock providers and the gateway, sends
+requests through it with curl (and with the OpenAI Python SDK, if it is installed), checks each answer, then runs the
+gateway again with day 3's client keys, made for the run, and stops everything:
 
 ```bash
 make demo
@@ -73,6 +89,25 @@ ok    sdk: a bad stream request           400 n
 ok    smart, with mock-b down            200
 ok    a stream that breaks               200, curl exit 18
 ok    sdk: a stream that breaks           APIError upstream_unavailable after 20 chunks
+...
+ok    no key                             401
+ok    a key it doesn't know              401
+ok    alice                              200
+ok    alice again, from the cache        200
+ok    alice's third: over her limit      429
+ok    bob, a miss                        200
+ok    bob again, a hit                   200
+ok    a stream, usage not asked          200
+ok    sdk: a 429 the SDK waits out        answered 1.02 s later: the SDK read Retry-After and retried
+ok    sdk: a 429 without retries          retry-after-ms 935
+ok    sdk: a wrong key                    401 invalid_api_key
+2026-10-20 (UTC), 4 client and model pairs
+  client  model  completions  cache hits  prompt tokens  completion tokens  cost (USD)  unpriced  no usage
+   alice   fast            1           1              5                 32  0.00001995         0         0
+     bob   fast            1           1              5                  7  0.00000495         0         0
+     bob  plain            1           0              5                 32  0.00001995         0         0
+   carol  plain            2           0             10                  7   0.0000057         0         0
+total cost 0.00005055 USD
 all checks passed
 ```
 
@@ -80,6 +115,13 @@ all checks passed
 "a stream that breaks", mock-b comes back with `-cut-rate 1`, so every answer breaks off part-way; the stream has
 started, so the client gets an error event and a cut transfer rather than a 502, and the SDK raises the event as an
 `APIError`.
+
+Day 3's part writes `run/day3.json` (gitignored) with three keys made by `switchboard keygen`: alice may send 2
+requests at once and 60 a minute, so her third is a 429 (her second was a cache hit, which still counts); bob's
+second identical request is a hit; and carol, with a burst of 1, sends two requests through the OpenAI SDK, whose
+second gets a 429 that the SDK itself waits out (it reads `retry-after-ms`) before retrying: answered 1.02 s later,
+with no retry code of the client's. The stream bob asks for without `include_usage` has no usage in it, yet is
+counted, because the gateway asked for it and took it out again. `switchboard usage` prints the totals.
 
 To run it by hand, in three terminals:
 
@@ -115,15 +157,36 @@ the SDK: `python3.11 -m venv .venv && .venv/bin/pip install -r scripts/requireme
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:8108/v1", api_key="placeholder")  # client keys come on day 3
+client = OpenAI(base_url="http://127.0.0.1:8108/v1", api_key="placeholder")  # configs/local.json asks for no key
 reply = client.chat.completions.create(model="fast", messages=[{"role": "user", "content": "Hello"}])
 print(reply.choices[0].message.content)  # This is mock-a answering as mock-small. You said: "Hello". ...
 ```
 
-`make check` runs what CI runs (gofmt, vet, `go test -race`). `go run ./cmd/switchboard check -config FILE`
-loads a configuration and prints its routes.
+With client keys (day 3): make a key, put its hash in a client's entry (`configs/clients.example.json` has the shape;
+its two hashes are of keys nobody has), start Redis, and give the SDK the key:
 
-## The API (days 1 and 2)
+```bash
+go run ./cmd/switchboard keygen
+```
+
+```
+key        sb-<43 random characters: give this to the client; it is printed once and kept nowhere>
+key_sha256 <64 hex digits: put this in the client's key_sha256>
+```
+
+```bash
+redis-server --port 6382 --save "" --appendonly no
+```
+
+```bash
+go run ./cmd/switchboard usage -config configs/clients.example.json
+```
+
+`make check` runs what CI runs (gofmt, vet, `go test -race`, starting the test Redis on 6382 if none answers;
+`make redis-stop` stops it). `go run ./cmd/switchboard check -config FILE` loads a configuration and prints its
+routes, clients, caches and prices.
+
+## The API (days 1 to 3)
 
 | Method and path | What it does |
 |---|---|
@@ -186,6 +249,27 @@ too large, the gateway stopping) gets one last event in OpenAI's error shape, wh
 `APIError`, and the connection is dropped. The provider's `timeout` is the longest wait for its next sign of
 progress: the whole answer, or a stream's next data event (pings don't count, and the time the gateway spends
 writing to a slow client doesn't either).
+
+**Client keys and rate limits (day 3).** With `clients` in the file, every path but `/livez` and `/readyz` needs
+`Authorization: Bearer <key>` (what an OpenAI SDK sends as its `api_key`); without one it is 401 `missing_api_key`,
+with a key nobody has 401 `invalid_api_key` (unknown paths too, so nothing is learnt without a key). A client with a
+`rate_limit` takes a request from its token bucket in Redis before its body is read; every answer then carries
+`x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests` and `x-ratelimit-reset-requests`, and an empty bucket
+is 429 `rate_limit_exceeded` with `Retry-After` and `retry-after-ms`. The bucket counts requests, not the gateway's
+attempts. When Redis can't answer within its `timeout`, the request goes on unlimited (or is 503 with `on_error:
+refuse`).
+
+**Caching (day 3).** A model with a `cache` keeps its answers (a 200 with a completion, a stream that ended with
+`[DONE]`; never an error or a broken stream) in Redis for its `ttl`, per client unless `shared`. An identical request
+(the same body for the same model, whitespace aside, an alias being its model) gets the kept answer byte for byte,
+with `X-Switchboard-Cache: hit` and `X-Switchboard-Attempts: 0`, and no provider is asked; otherwise `miss`.
+`Cache-Control: no-cache` skips the lookup and keeps the new answer (`refresh`); `no-store` does neither (`bypass`).
+
+**Accounting (day 3).** Every completion's `usage`, as the provider reported it, is logged with its cost at the
+`prices` given for its provider and upstream model (`prompt_tokens`, `completion_tokens`, `cost_usd`), and added to
+the client's totals for the day in Redis, which `switchboard usage` prints. A stream has a usage only if
+`stream_options.include_usage` asks; for a client that didn't ask, the gateway asks and takes the usage out of the
+stream again, so the client gets the stream it asked for.
 
 ## Results (day 1)
 
@@ -322,8 +406,33 @@ holds it, and the gateway refuses to start if it is unset. A live provider is op
 `configs/openai.example.json` routes `gpt-4o-mini` to OpenAI with the key from `OPENAI_API_KEY`. Tests and CI use
 the mocks only and need no key.
 
+Day 3's settings: `redis` (`addr`; `prefix`, default `switchboard:`; `timeout`, default 100 ms; `on_error`,
+`allow` (default) or `refuse`; `password_env`), `clients` (each `name`, `key_sha256` from `switchboard keygen`, and
+an optional `rate_limit` of `requests_per_minute` and `burst`, by default a minute's requests), `prices` (per provider
+and `upstream_model`, `input_per_million` and `output_per_million` in dollars, plain decimals of at most 6 places), a
+model's `cache` (`ttl`, `shared`), and a provider's `stream_usage` (default true: may the gateway ask it for a
+stream's usage). `configs/clients.example.json` has all of them:
+
+```json
+{
+  "redis": {"addr": "127.0.0.1:6382", "timeout": "100ms", "on_error": "allow"},
+  "clients": [
+    {"name": "alice", "key_sha256": "5b57e588...", "rate_limit": {"requests_per_minute": 60, "burst": 10}},
+    {"name": "bob", "key_sha256": "8874f418..."}
+  ],
+  "models": [
+    {"name": "fast", "aliases": ["gpt-4o-mini"], "provider": "mock-a", "upstream_model": "mock-small",
+      "cache": {"ttl": "10m"}}
+  ],
+  "prices": [
+    {"provider": "mock-a", "upstream_model": "mock-small", "input_per_million": 0.15, "output_per_million": 0.6}
+  ]
+}
+```
+
 The file is read strictly: a key given twice, a key in the wrong case, an unknown key or a null is an error that
-names it, not a silent default.
+names it, not a silent default (145 kinds of mistake, 56 of them day 3's: a rate limit or a cache without Redis, two
+clients with one key, a price with an exponent or seven places...).
 
 ## The mock provider
 
@@ -353,6 +462,10 @@ CI runs the same on Ubuntu 24.04, then `make demo`'s script with the SDK checks 
 | `mock` | exact answers and usage; `max_tokens` and `n`; validation; the key; latency lower bounds; jitter bounds; the same seed gives the same run, and a higher error, hang or cut rate only adds failures, hangs or cuts; `Close` drops held and later requests; an unreadable body is a 400; a stream is the plain answer chunk by chunk (with `n` = 2), its pace, its usage chunk, a cut stream with no `[DONE]`, a cut answer shorter than its `Content-Length` |
 | `gateway` | a forward with only `model` rewritten and only the allowlisted headers; the `Host` allowlist (any spelling of an address, no `Host` at all, the health endpoints exempt, refusals logged); every refusal before forwarding, the request limit at exactly its boundary, a 408 for a slow body, a 503 for a body still arriving at the stop; every row of the mapping table with a misbehaving provider; the response limit at exactly its boundary; timeouts (no answer, a trickled body); unreachable and cut-off providers; a client that leaves or half-closes (never an empty 200); the shutdown 503; a forwarded request never resent; HTTP/2 to an https provider; the pool keeping its connections; the log line's facts and absences; 64 concurrent requests |
 | `gateway`, day 2 | 21 kinds of failure, each falling back with its outcome or not falling back; the unanswered rule (a timeout skips the same provider's other target; a 500 doesn't); the last answer and only its headers; `max_attempts`; the budget off and at 0.5; open breakers skipped, then 503 with `Retry-After`; a 404 not tripping one; a probe the budget refuses handed back; weights; a client leaving or the stop ending the fallback; a stream byte for byte against the mock's own and flushed per event; 8 ways a stream fails before its first event, each falling back; errors before it mapped as usual (never an empty 200); the error event after it (a cut, a stall, the stop); the timeout between events; a slow client not taken for the provider's timeout; a client leaving mid-stream; the event reader's cases, and a fuzz test against a whole-input reference |
+| `ratelimit` (day 3) | on a hand-moved clock: the burst then the wait, refills at the rate and no further, a rate of 0.5 a minute a second at a time, a clock going back, one bucket per client, expiry when full; 200 requests at once against a burst of 50 (exactly 50 pass); Redis's own clock; Redis down and Redis never answering |
+| `usage` (day 3) | usage from answers and chunks (missing, negative, too large, fractional, quoted counts are no usage); costs exact to the picodollar and written exactly; totals per day, client and model (a model name with a colon, the next UTC day), their expiry; a prefix with a `*` read as itself |
+| `cache` (day 3) | the key changes with the scope, the model, any byte of the request but whitespace, and parts can't run together; entries come back as they went (bytes of any kind), the size limit at its edge, unreadable entries are misses, the ttl |
+| `gateway`, day 3 | every way to send no key or a wrong one (401 for unknown paths too; health exempt; never logged; never upstream); limits per client, their headers, the 429's `Retry-After` and `retry-after-ms`, refilled a second later; requests not attempts; the limit before the body; Redis down (allow and refuse) and silent (bounded by its timeout); usage and exact costs per answer and stream (asked for or not, an alias, unpriced, no usage); a stream with the usage taken out against the mock's own, event for event, and OpenAI's `"usage": null` chunks; errors and broken streams uncounted; a cache hit byte for byte, misses, per client unless shared, only answers kept, `no-cache` and `no-store`, a stream's hit, Redis down |
 | `cmd/...` | serving, readiness and a clean stop; the drain (`/readyz` 503 while still answering); a request finishing within the grace; one still running after it getting a 503; a second signal ending the real binary at once; the server's timeouts; usage errors and exit codes |
 
 Mutation checks, run by hand: 46 mechanisms removed or broken one at a time, and each made a test fail: 26 in the
@@ -405,7 +518,8 @@ does the same check before the first attempt, which is equivalent in practice.
   server's base context with a shutdown cause, which cancels their provider requests and lets each answer 503.
   `http.Server.Shutdown` alone returns at its deadline with handlers still running. A second Ctrl-C ends it at once
   (two identical signals sent back to back by a program can merge into one; DESIGN.md says why).
-- **No dependencies.** The standard library covers days 1 and 2; Redis and Prometheus come with days 3 and 4.
+- **One dependency.** The standard library covered days 1 and 2; day 3 adds `github.com/redis/go-redis/v9` (v9.23.0),
+  set to fail fast: no retries, one dial attempt, every command bounded by `redis.timeout`.
 - **Three outcomes, because a retry can cost money.** An error answer says the provider didn't do the work, so any
   target may be next; a timeout or a cut-off answer doesn't say that, so the provider that may have done it isn't
   sent the request again. "Retryable or not" alone can't express that.
@@ -417,11 +531,30 @@ does the same check before the first attempt, which is equivalent in practice.
 - **A stream commits on its first event.** Until then the gateway has written nothing and can still fall back;
   after it, the status is out, so a break becomes an error event (which SDKs raise) and a dropped connection (so no
   client takes it for a complete answer), never a 502.
+- **Hashes of client keys in the file.** It can be checked in, and a copy of it grants nothing.
+- **Limits in Redis, as GCRA.** One bucket per client whichever gateway its requests reach, updated by one Lua script
+  (no two gateways take the last request), kept as one time in whole microseconds (a bucket of fractional tokens
+  drifted in a test: 120 refills of 1/120 made less than one), on Redis's clock.
+- **Fail open.** When Redis is down a request goes on unlimited by default: the limit guards a budget, and a Redis
+  outage shouldn't become the gateway's. `on_error: refuse` for budgets that must hold.
+- **Cache per client, answers only.** A shared cache tells one client what another asked, so sharing is opt-in per
+  model; only completions and finished streams are kept, so a hit is never an error or half an answer.
+- **The provider's own token counts.** For a stream whose client didn't ask for its usage, the gateway asks and takes
+  it out again, rather than estimating tokens it has no tokenizer for.
+- **Money in integer picodollars.** Exact sums, and bounds that make overflow impossible.
 
-## Limitations (day 2)
+## Limitations (day 3)
 
-- No client authentication, rate limits, caching or cost accounting (day 3); no metrics (day 4).
-- The retry budget and the breakers live in one gateway process: replicas don't share them.
+- No metrics (day 4).
+- The retry budget and the breakers live in one gateway process: replicas don't share them (rate limits, the cache
+  and the totals do, through Redis).
+- Rate limits count requests, not tokens: a client's huge prompts spend tokens no request limit sees.
+- The cache doesn't stop a stampede: identical requests at once all miss and all go upstream.
+- A request makes up to four Redis round trips (the limit, the cache lookup, the totals, keeping a miss's answer),
+  one after another; README "Results (day 3)" has their cost.
+- A stream that breaks isn't counted (its provider may still bill the tokens it wrote), and neither are unanswered
+  attempts before a fallback.
+- A key can't be revoked without a restart: the clients are read at start.
 - No deadline across attempts: a request can wait up to `max_attempts` provider timeouts before its last answer
   (the client's own timeout bounds it; leaving cancels everything).
 - A target is never retried within a request, even after a 429 with a short `Retry-After`; the client's SDK retries.
