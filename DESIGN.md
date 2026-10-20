@@ -281,7 +281,7 @@ but `/livez` and `/readyz` needs `Authorization: Bearer <key>`, which is what ev
   configuration can be checked in and shown around; `switchboard keygen` makes a key (`sb-` and 32 random bytes,
   base64url) and prints it with its hash, once. A presented key is hashed and looked up; with 256 random bits, a hash
   is as unguessable as the key, and comparing hashes leaks nothing a timing could use about the key itself.
-- **Refusals are 401** in OpenAI's shape, which the SDKs raise as `AuthenticationError`: `missing_api_key` (no
+- **Refusals are 401** in OpenAI's shape, which the OpenAI SDK raises as `AuthenticationError`: `missing_api_key` (no
   header, another scheme, an empty token) or `invalid_api_key` (a key nobody has), with `WWW-Authenticate: Bearer`.
   A path that doesn't exist is 401 too, not 404, so a client without a key learns nothing about what is served.
   Each refusal is logged (`client key refused`, the reason, the path, the remote address); the key never is.
@@ -312,9 +312,9 @@ costs the gateway one Redis round trip and nothing upstream (a body over the siz
   which is what a missing key means, so idle clients cost no memory.
 - **What the client sees.** Every answer carries OpenAI's `x-ratelimit-limit-requests`,
   `x-ratelimit-remaining-requests` and `x-ratelimit-reset-requests` (time until full, as `1.5s`). A refusal is 429
-  `rate_limit_exceeded` with `Retry-After` (seconds, rounded up) and `retry-after-ms`, which the OpenAI SDKs read
-  before retrying by themselves: in the demo, the SDK's second request in a second is answered 1.02 s later with no
-  code of the client's involved.
+  `rate_limit_exceeded` with `Retry-After` (seconds, rounded up) and `retry-after-ms`, which the OpenAI Python SDK
+  reads before retrying by itself: in the demo, the SDK's second request in a second is answered 1.02 s later with no
+  code of the client's involved. (Only the Python SDK is checked; the others are generated from the same spec.)
 
 ## Caching (day 3)
 
@@ -349,13 +349,14 @@ Every completion's usage, as the provider reported it, priced at the provider's 
   (a last chunk with empty `choices`; some providers put it on the last choices instead; both are read).
 - **Asking on the client's behalf.** For a stream whose client didn't ask, the gateway sets
   `stream_options.include_usage: true` upstream (merged into the client's `stream_options`, whose other members are
-  kept) and takes the usage out again: a chunk that is only the usage is dropped, and a `usage` member on any other
-  chunk (OpenAI writes `"usage": null` on every chunk when asked) is removed, the chunk rewritten compacted. Every other
-  event goes byte for byte, so the client gets the stream it asked for (a test compares it with the mock's own stream,
-  event for event). A provider that refuses `stream_options` can have `stream_usage: false`; its streams then count
-  as completions with no usage. Because the gateway now reads `include_usage`, a key equal to `stream_options` or
-  `include_usage` only when case is ignored is refused, as for `model` and `stream` (a Go provider would read
-  `{"Include_Usage": true}` as the real thing while the gateway thought the client hadn't asked).
+  kept) and takes the usage out again: a chunk with the usage and no choices (OpenAI's last one) is dropped, and a
+  `usage` member on any other chunk (OpenAI writes `"usage": null` on every chunk when asked) is removed, the chunk
+  rewritten compacted. Every other event goes byte for byte, so the client gets the stream it asked for (a test
+  compares it with the mock's own stream, event for event). A provider that refuses `stream_options` can have
+  `stream_usage: false`; a stream from it whose client didn't ask then counts as a completion with no usage. Because
+  the gateway now reads `include_usage`, a key equal to `stream_options` or `include_usage` only when case is ignored
+  is refused, as for `model` and `stream` (a Go provider would read `{"Include_Usage": true}` as the real thing while
+  the gateway thought the client hadn't asked).
 - **Money is whole picodollars.** Prices are dollars per million tokens, written as plain decimals with at most six
   places and converted exactly (no float) to microdollars per million tokens, which is picodollars per token: $0.15
   is 150,000. A cost is two products and a sum in an int64; with prices at most $1,000 per million and counts at most a

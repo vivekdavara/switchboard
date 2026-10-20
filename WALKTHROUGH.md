@@ -453,9 +453,9 @@ So a refused request costs one Redis round trip and nothing more: not reading up
 
 **What does a client see when it's limited?**
 429 `rate_limit_exceeded` with `Retry-After` (seconds) and `retry-after-ms`, plus OpenAI's
-`x-ratelimit-{limit,remaining,reset}-requests` on every answer. The OpenAI SDKs read `retry-after-ms` and wait that
-long before their own retry: in the demo, carol (a burst of 1) sends two requests through the SDK and the second is
-answered 1.02 s later, with no retry code of hers.
+`x-ratelimit-{limit,remaining,reset}-requests` on every answer. The OpenAI Python SDK reads `retry-after-ms` and
+waits that long before its own retry: in the demo, carol (a burst of 1) sends two requests through the SDK and the
+second is answered 1.02 s later, with no retry code of hers.
 
 **And when Redis is down?**
 Every command has a timeout (100 ms by default), no retries and one dial attempt. A rate-limited request then goes on

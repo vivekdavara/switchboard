@@ -102,8 +102,8 @@ func bearer(h string) (string, bool) {
 
 // rateLimit takes one request from the client's bucket and says whether the request may go on. Allowed or not, the
 // answer carries OpenAI's x-ratelimit-*-requests headers; a refusal is 429 with Retry-After in seconds and
-// retry-after-ms, which the OpenAI SDKs read (and wait for) before retrying on their own. When Redis can't say, the
-// request goes on unlimited, or is refused with 503 if the file says on_error: refuse.
+// retry-after-ms, which the OpenAI Python SDK reads (and waits for) before retrying on its own. When Redis can't say,
+// the request goes on unlimited, or is refused with 503 if the file says on_error: refuse.
 func (g *Gateway) rateLimit(w http.ResponseWriter, r *http.Request, x *exchange, cl *config.Client) bool {
 	ctx, cancel := context.WithTimeout(r.Context(), g.cfg.Redis.Timeout)
 	defer cancel()
