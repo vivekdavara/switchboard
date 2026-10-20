@@ -9,36 +9,45 @@ that simulate latency and errors.
 
 This document is written before the code of each day and corrected after it. Day 1's part is the request path, the
 error mapping, the configuration and the mock providers; day 2's is routing, fallback, the retry budget, circuit
-breakers and streaming.
+breakers and streaming; day 3's is client keys, rate limits, caching and accounting, with Redis.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    C["client<br/>(OpenAI SDK, curl)"] -->|"POST /v1/chat/completions"| G
+    C["client<br/>(OpenAI SDK, curl)"] -->|"POST /v1/chat/completions<br/>Authorization: Bearer key"| K
     subgraph G["switchboard (127.0.0.1:8108)"]
         direction LR
-        P["read and check<br/>the body"] --> R["route: model or alias →<br/>targets in weighted order"]
-        R --> T{"next target:<br/>breaker allows?<br/>budget allows a retry?"}
+        K["client key<br/>(401)"] --> Q["rate limit<br/>(429)"]
+        Q --> P["read and check<br/>the body"]
+        P --> R["route: model or alias →<br/>targets in weighted order"]
+        R --> H{"cached?"}
+        H -->|hit| M
+        H -->|miss| T{"next target:<br/>breaker allows?<br/>budget allows a retry?"}
         T -->|yes| F["forward: rewrite model,<br/>set the provider's key"]
         F -->|"failed or unanswered"| T
         F -->|"answered, or a stream's first event"| M["answer, or relay<br/>the stream event by event"]
+        M --> U["usage, cost, totals;<br/>keep the answer"]
         T -->|"no target left"| E["the last failure,<br/>or 503 circuit_open"]
     end
+    Q <-->|"one Lua script"| D[("Redis :6382<br/>buckets, cache, totals")]
+    H <--> D
+    U --> D
     F -->|HTTP| A["mock-a :8118"]
     F -->|HTTP| B["mock-b :8119"]
     F -.->|"opt-in, a key from the environment"| L["a live provider"]
 ```
 
 Day 1 had one provider per model. Day 2 puts a list of weighted targets behind each model, with fallback, a retry
-budget and a circuit breaker per provider, and streams. Day 3 puts Redis (port 6382) beside the gateway for rate
-limits.
+budget and a circuit breaker per provider, and streams. Day 3 puts client keys in front, and Redis (port 6382 here)
+beside the gateway for rate limits, the cache and the usage totals, so that several gateways naming one Redis share
+them.
 
-## The API (days 1 and 2)
+## The API (days 1 to 3)
 
 | Method and path | What it does |
 |---|---|
-| `POST /v1/chat/completions` | Forwards a chat completion to one of the model's targets, falling back to the others (day 2). With `stream: true` the answer is relayed as server-sent events (day 2). |
+| `POST /v1/chat/completions` | Forwards a chat completion to one of the model's targets, falling back to the others (day 2). With `stream: true` the answer is relayed as server-sent events (day 2). A model with a cache may answer from it (day 3). |
 | `GET /v1/models` | Every name the gateway answers to, in OpenAI's list shape: each model's name, then its aliases. `owned_by` is `switchboard`, since the provider is chosen per request. |
 | `GET /v1/models/{model}` | One of them, or 404 `model_not_found`. Added while building: the OpenAI SDK's `models.retrieve` calls it. |
 | `GET /livez` | 200 while the process runs, whatever the `Host`. |
@@ -53,7 +62,8 @@ before any handler runs: a malformed request line, headers over 1 MB):
 ```
 
 An unknown path is 404 and a known path with the wrong method is 405 with an `Allow` header, both in that shape
-(`http.ServeMux` writes its own as text/plain, so a wrapper writes them).
+(`http.ServeMux` writes its own as text/plain, so a wrapper writes them). From day 3, with `clients` in the file,
+every path but the two health endpoints needs a client's key first (401 otherwise, unknown paths included).
 
 ## A chat completion, step by step
 
@@ -66,6 +76,10 @@ An unknown path is 404 and a known path with the wrong method is 405 with an `Al
    `[::ffff:127.0.0.1]` is `127.0.0.1`); the second review found both refused. The health endpoints answer any
    `Host` (a load balancer probes by address, and `/readyz`'s drain exists for it), and every refusal is logged
    (`host not allowed`, with the host and path), so rebinding attempts show.
+0b. **Client key (day 3).** With `clients` in the file, every path but the health endpoints needs `Authorization:
+   Bearer <key>`, compared by its SHA-256; otherwise 401 ("Client keys", below).
+0c. **Rate limit (day 3).** A client with a `rate_limit` takes one request from its token bucket in Redis, before the
+   body is read; an empty bucket is 429 ("Rate limits").
 1. **Content type.** The request must say `Content-Type: application/json` (parameters such as `charset=utf-8` are
    fine), or it gets 415. This is not pedantry: a web page can make a browser send a cross-origin POST without asking
    the server first only if its content type is a form's or `text/plain`, and a form can be written so that its
@@ -91,6 +105,8 @@ An unknown path is 404 and a known path with the wrong method is 405 with an `Al
 5. **Route.** The model name is looked up in the configuration, by name or alias: a list of targets, each a provider
    and the provider's name for the model ("Routing", below). An unknown name is 404 with code `model_not_found`, as
    OpenAI answers.
+5b. **Cache (day 3).** For a model with a `cache`, an identical earlier request's answer, if Redis has one, is the
+   answer, and no provider is asked ("Caching").
 6. **Rewrite.** The body sent upstream is the client's top-level members, in their order, each value byte for byte,
    with only `model`'s value replaced by the upstream name. The keys are written again from what they decode to
    (`"\u006dodel"` goes up as `"model"`, `<` in a key as `\u003c`), which is how any provider reads them anyway.
@@ -102,6 +118,8 @@ An unknown path is 404 and a known path with the wrong method is 405 with an `Al
 8. **Answer.** See the next section. The client also gets `X-Request-Id`, `X-Switchboard-Provider` (the provider
    whose answer it is) and `X-Switchboard-Attempts` (how many targets were tried). From day 2, steps 6 to 8 run once
    per target until one answers ("Fallback", below), and a streamed answer is relayed as it comes ("Streaming").
+9. **Count (day 3).** A completion's usage is read and priced, and added to the client's daily totals; a model with
+   a cache keeps the answer ("Accounting", "Caching").
 
 The request id is 16 random hex digits made by the gateway, also on every log line about the request.
 
@@ -253,6 +271,121 @@ longer than the timeout got a healthy stream cut as `upstream_timeout`, and the 
 while writing this paragraph; `TestASlowClientIsNotTheProvidersTimeout`). Events are lines ending in `\n` or `\r\n` up to a
 blank line; a lone `\r` as a line ending (allowed by the SSE spec, sent by no provider we know) isn't recognised.
 
+## Client keys (day 3)
+
+Until day 3 anyone who could reach the port spent the providers' keys. With a `clients` list in the file, every path
+but `/livez` and `/readyz` needs `Authorization: Bearer <key>`, which is what every OpenAI SDK sends with its
+`api_key`, so a client changes only its key and base URL.
+
+- **The file holds hashes, not keys.** Each client has a name and `key_sha256`, the SHA-256 of its key, so the
+  configuration can be checked in and shown around; `switchboard keygen` makes a key (`sb-` and 32 random bytes,
+  base64url) and prints it with its hash, once. A presented key is hashed and looked up; with 256 random bits, a hash
+  is as unguessable as the key, and comparing hashes leaks nothing a timing could use about the key itself.
+- **Refusals are 401** in OpenAI's shape, which the SDKs raise as `AuthenticationError`: `missing_api_key` (no
+  header, another scheme, an empty token) or `invalid_api_key` (a key nobody has), with `WWW-Authenticate: Bearer`.
+  A path that doesn't exist is 401 too, not 404, so a client without a key learns nothing about what is served.
+  Each refusal is logged (`client key refused`, the reason, the path, the remote address); the key never is.
+- **The client's key never goes upstream** (day 1's header allowlist), and its name goes in the log line (`client`)
+  and the totals.
+- Without `clients`, nothing changes from day 2: no key is asked for, and requests count as `anonymous`.
+
+## Rate limits (day 3)
+
+A client may have a `rate_limit`: a token bucket of `burst` requests (by default a minute's worth), refilled at
+`requests_per_minute`. Each chat completion takes one request from it before the body is read, so a refused request
+costs the gateway one Redis round trip and nothing upstream (a body over the size limit is still a 429, not a 413).
+
+- **Requests, not attempts.** The bucket counts the client's requests: a fallback is the gateway's cost, not the
+  client's (day 2's rule). Two requests that each fell back once leave a burst of 2 empty, not overdrawn. A cache hit
+  is a request like any other and counts. `/v1/models` isn't limited.
+- **In Redis, as one script.** The bucket lives in Redis so every gateway naming the same Redis shares it, and one
+  Lua script (`internal/ratelimit`) reads and updates it in one step, so two gateways can't both take a bucket's
+  last request (a test sends 200 requests at once at a burst of 50: exactly 50 pass).
+- **Stored as GCRA stores it.** Rather than the tokens left and when they were counted, the bucket is one number:
+  the time it will be full again (GCRA's "theoretical arrival time"). Each request allowed pushes it one interval
+  (60 s / the rate) later; a request is allowed if, pushed, it is at most `burst` intervals from now. It is the same
+  token bucket, but the state is a time, so there is nothing to refill: my first version kept tokens as a fraction
+  and added a fraction per call, and a test refilling 0.5 requests a minute a second at a time found 120 refills
+  adding up to less than one token. Every value is whole microseconds, which a Lua number (a double) holds exactly.
+- **Redis's clock.** The script reads `TIME`, so every gateway uses one clock whatever their own say (tests pass
+  their own). A clock behind the bucket only sees a longer wait. The key expires when the bucket would be full again,
+  which is what a missing key means, so idle clients cost no memory.
+- **What the client sees.** Every answer carries OpenAI's `x-ratelimit-limit-requests`,
+  `x-ratelimit-remaining-requests` and `x-ratelimit-reset-requests` (time until full, as `1.5s`). A refusal is 429
+  `rate_limit_exceeded` with `Retry-After` (seconds, rounded up) and `retry-after-ms`, which the OpenAI SDKs read
+  before retrying by themselves: in the demo, the SDK's second request in a second is answered 1.02 s later with no
+  code of the client's involved.
+
+## Caching (day 3)
+
+A model may have a `cache` (`ttl`, and `shared`, off by default). Its answers are kept in Redis, and an identical
+request gets the kept answer without any provider being asked.
+
+- **What is kept: answers only.** A 200 with a completion, and a stream that ended with `[DONE]` (day 2's rule):
+  never a 400, a failure, a broken stream, or an answer over 1 MiB. A stream is kept as the bytes the client got (so
+  with the usage already taken out when the gateway asked for it, below) and replayed all at once.
+- **The key is everything that decides the answer**: the SHA-256 of a version, the scope (the client's name, or `*`
+  for a shared cache), the model's own name (so an alias and its model share entries) and the request's body with that
+  name as its model, compacted (whitespace between tokens doesn't matter). Anything else that differs (a parameter,
+  the order of keys) is another entry. That errs one way only: a miss is never wrong, a wrong hit would be. The parts
+  are NUL-separated, so the client `alic` asking for `efast` isn't `alice` asking for `fast`.
+- **Per client unless shared.** A hit tells a client that someone sent exactly this request within the ttl, so by
+  default only that same client can be told. `shared: true` is for models where that doesn't matter (an eval
+  harness, public prompts).
+- **A hit is no attempt.** `X-Switchboard-Cache: hit`, `X-Switchboard-Attempts: 0`, `X-Switchboard-Provider` naming
+  whose answer it was, the body byte for byte; it costs no retry budget and tells no breaker anything (day 2's rule),
+  and the totals count it as a cache hit with no tokens.
+- **Asking for a fresh answer.** `Cache-Control: no-cache` isn't served from the cache, and its answer replaces the
+  entry (`refresh`); `no-store` is neither read nor kept (`bypass`).
+- A cached answer has the original's `id` and `created`: it *is* that answer. Temperature above 0 makes answers
+  random; caching such a model is the operator's choice, per model, and off by default.
+
+## Accounting (day 3)
+
+Every completion's usage, as the provider reported it, priced at the provider's price for its upstream model:
+
+- **Where usage comes from.** A plain answer's `usage` object (`prompt_tokens` and `completion_tokens`, whole and from
+  0 to a billion, or it counts as no usage). A stream carries its usage only if `stream_options.include_usage` asks
+  (a last chunk with empty `choices`; some providers put it on the last choices instead; both are read).
+- **Asking on the client's behalf.** For a stream whose client didn't ask, the gateway sets
+  `stream_options.include_usage: true` upstream (merged into the client's `stream_options`, whose other members are
+  kept) and takes the usage out again: a chunk that is only the usage is dropped, and a `usage` member on any other
+  chunk (OpenAI writes `"usage": null` on every chunk when asked) is removed, the chunk rewritten compacted. Every other
+  event goes byte for byte, so the client gets the stream it asked for (a test compares it with the mock's own stream,
+  event for event). A provider that refuses `stream_options` can have `stream_usage: false`; its streams then count
+  as completions with no usage. Because the gateway now reads `include_usage`, a key equal to `stream_options` or
+  `include_usage` only when case is ignored is refused, as for `model` and `stream` (a Go provider would read
+  `{"Include_Usage": true}` as the real thing while the gateway thought the client hadn't asked).
+- **Money is whole picodollars.** Prices are dollars per million tokens, written as plain decimals with at most six
+  places and converted exactly (no float) to microdollars per million tokens, which is picodollars per token: $0.15
+  is 150,000. A cost is two products and a sum in an int64; with prices at most $1,000 per million and counts at most a
+  billion, each product is at most 10^18 and the sum can't overflow. It is written back exactly (`0.00001995`).
+- **Where it goes.** The log line (`prompt_tokens`, `completion_tokens`, `cost_usd`), and with Redis the client's
+  totals: one hash per UTC day, client and model's own name (`completions`, `cache_hits`, `prompt_tokens`,
+  `completion_tokens`, `cost_picousd`, `unpriced`, `no_usage`), added in one MULTI so a report never sees half a
+  request, kept 90 days after its last write. `switchboard usage` prints a day.
+- **When.** After the answer is written and before the handler returns, so before an answer that fits net/http's
+  buffer leaves: it costs the client a Redis round trip (README "Results (day 3)"), and in return the log line says if
+  the totals couldn't be written (`totals_err`). Writing them in the background, batched, would take that off the
+  request path; day 4's load test decides whether it's worth the loss of that certainty.
+- **What isn't counted.** Errors and 400s; streams that broke (the provider may still bill the tokens it wrote:
+  the log line has the break, not the tokens); attempts that were unanswered before a fallback (they may have cost
+  something; nobody can know what).
+
+## When Redis is down (day 3)
+
+Each Redis command is bounded by `redis.timeout` (100 ms by default), with no retries and one dial attempt, so a
+Redis that is down or never answers costs a request at most that, per step:
+
+| Step | Redis can't answer | Logged as |
+|---|---|---|
+| a client's rate limit | the request goes on unlimited (`on_error: allow`, the default), or is 503 `rate_limit_unavailable` (`on_error: refuse`) | `rate_limit: unavailable`, `redis_err` |
+| the cache lookup | a miss; the provider is asked | `cache: unavailable`, `cache_err` |
+| keeping the answer, adding the totals | nothing: the client has its answer | `cache_err`, `totals_err` |
+
+Allowing is the default because the limit protects the providers' budget, not the client's answer: a Redis outage
+shouldn't become a gateway outage. A gateway in front of a budget that must not be exceeded sets `refuse`.
+
 ## Timeouts and shutdown
 
 - The server: `ReadHeaderTimeout` 10 s, `ReadTimeout` 60 s (a 4 MiB body over a slow link), `IdleTimeout` 120 s,
@@ -364,6 +497,31 @@ A null is an error too, not "the default".
 }
 ```
 
+- Day 3's keys, at the top level: `redis` (`addr`, required; `prefix`, default `switchboard:`; `timeout`, default
+  100 ms, at most 10 s; `on_error`, `allow` or `refuse`; `password_env`, a variable's name, like `api_key_env`),
+  `clients` (each `name`, `key_sha256`, and an optional `rate_limit` of `requests_per_minute`, above 0 and at most a
+  million, and `burst`, from 1 to a million, by default a minute's requests), and `prices` (each `provider`,
+  `upstream_model`, `input_per_million`, `output_per_million`: plain decimals from 0 to 1000 with at most 6 places, no
+  exponent and no quotes). On a model, `cache` (`ttl` from 1 ms to 30 days, `shared`); on a provider, `stream_usage`
+  (default true). A rate limit or a cache without `redis` is an error, and so is an empty `clients` list (every
+  request would be refused), two clients with one hash, a client named `anonymous`, and a price given twice. A key
+  pasted into `key_sha256`, or a password into `password_env`, is never printed in an error.
+
+```json
+{
+  "redis": {"addr": "127.0.0.1:6382", "timeout": "100ms", "on_error": "allow"},
+  "clients": [
+    {"name": "alice", "key_sha256": "<64 hex digits from switchboard keygen>",
+      "rate_limit": {"requests_per_minute": 60, "burst": 10}},
+    {"name": "bob", "key_sha256": "<another>"}
+  ],
+  "models": [{"name": "fast", "provider": "mock-a", "upstream_model": "mock-small", "cache": {"ttl": "10m"}}],
+  "prices": [
+    {"provider": "mock-a", "upstream_model": "mock-small", "input_per_million": 0.15, "output_per_million": 0.6}
+  ]
+}
+```
+
 ## The mock providers
 
 `mockprovider` is a small OpenAI-compatible server for tests, demos and (day 4) load and chaos runs. It is
@@ -434,6 +592,25 @@ As built on day 2:
   SDK raising the gateway's error event as an `APIError`.
 - Mutation checks by hand, as on day 1 (README "Tests" lists them).
 
+As built on day 3:
+
+- Redis is a real one in every test that needs it: the one `SWITCHBOARD_TEST_REDIS` names (`make test` starts a
+  project-local one on 6382, keeping nothing on disk; CI runs `redis:8` as a service container), each test under a
+  key prefix of its own that it deletes at the end. Without the variable those tests skip, so `go test ./...` works
+  anywhere; with it set and nothing answering, they fail, so CI can't pass by skipping them.
+- The bucket on a hand-moved clock (the burst, refills, a fractional rate, a clock going back, expiry), and 200
+  requests at once against a burst of 50. The gateway: every way to send no key or a wrong one, a 401 for unknown
+  paths, limits per client, requests not attempts, the limit before the body, Redis down (allow and refuse) and a
+  Redis that never answers.
+- Accounting: usage and exact costs per answer and per stream, asked for or not, through an alias, unpriced, with no
+  usage; the stream a client gets with the usage taken out compared with the mock's own, event for event; OpenAI's
+  `"usage": null` chunks; broken streams and errors not counted. `FuzzAskingForUsageKeepsTheRest` checks that asking
+  for usage changes nothing else in any accepted body.
+- Caching: a hit byte for byte (through an alias, with other whitespace), misses for another parameter, per client
+  unless shared, only answers kept, no-cache and no-store, a stream's hit event for event, a broken stream not kept,
+  Redis down.
+- The demo runs day 3 with keys made for the run, and checks the OpenAI SDK waiting out a 429 by itself.
+
 ## Decisions and alternatives
 
 - **Forward raw members, not structs.** Decoding into structs and encoding again is the easy way and loses every
@@ -452,13 +629,32 @@ As built on day 2:
   costs nothing but the gateway's own time to read one event (README "Results (day 2)").
 - **An error event, then a dropped connection.** The event tells an SDK what happened; the drop makes sure no client
   takes a broken stream for a finished one. Either alone is weaker.
+- **Hashes of keys in the file, not keys.** The file can be checked in; a stolen file grants nothing. The cost: a
+  lost key can't be recovered, only replaced, as with any API key.
+- **The rate limit in Redis, not in each gateway's memory.** Limits per gateway multiply by the number of gateways;
+  one Redis makes the limit the client's, wherever its requests land. The cost is a round trip per request (README
+  "Results (day 3)"), and a dependency that can be down ("When Redis is down").
+- **GCRA's one number, not tokens and a time.** The same bucket; whole microseconds instead of a fraction that
+  drifts, and one key read and written per request.
+- **Redis's clock, not the gateway's.** Gateways on several machines disagree about the time; the script's `TIME`
+  is one clock for all of them.
+- **Fail open by default.** A rate limit protects a budget; making every request depend on Redis would turn a cache's
+  outage into the gateway's. `on_error: refuse` is there for the other case.
+- **Cache per client by default.** A shared cache tells one client what another asked; sharing is per model, opt-in.
+- **Ask for the usage and take it out again, rather than estimate tokens.** The gateway has no tokenizer for every
+  provider, and an estimate would bill wrongly; the provider's own count is the bill. The cost is parsing the chunks
+  that mention usage (BenchmarkUnasked) and a client-visible change the gateway must undo exactly.
+- **Integer picodollars, not floats.** Sums of floats drift and can't be checked against an invoice; bounded integers
+  can't overflow and add up exactly.
+- **Totals written before the handler returns, not in the background.** Simpler, and every log line says whether its
+  totals were written; the cost is a round trip, measured, for day 4 to weigh.
 
-## Plan for days 3 to 5
+## Plan for days 4 and 5
 
 - **Day 2 (done):** routing (weighted targets, model aliases), fallback on errors and timeouts with a retry budget,
   circuit breakers per provider, streaming passthrough (server-sent events, flushed per event), the mock streaming.
-- **Day 3:** per-key token-bucket rate limits in Redis (client keys arrive here), response caching, token and cost
-  accounting from the providers' `usage`.
+- **Day 3 (done):** client keys, per-key token-bucket rate limits in Redis, response caching, token and cost
+  accounting from the providers' `usage`, with daily totals per client.
 - **Day 4:** Prometheus metrics, structured logs; a load test against the mocks (latency overhead, throughput); a
   chaos run with one provider down, measuring fallback.
 - **Day 5:** README with results, WALKTHROUGH.md, v1.0.0.
@@ -490,3 +686,17 @@ What day 2 leaves for them to respect:
 - Day 4's metrics: attempts per request, outcomes, skips, budget refusals and breaker states are all in the log line
   already; the counters should be the same facts. The chaos run (one provider down) has `BenchmarkDeadProvider`'s
   numbers to compare with.
+
+What day 3 leaves for them to respect:
+
+- Every Redis step is bounded by `redis.timeout` and none may fail a request it doesn't have to ("When Redis is
+  down"); day 4's chaos run should take Redis down too, not only a provider.
+- A request makes up to four Redis round trips (the limit, the cache lookup, the totals, and keeping a miss's answer), about 90 µs each on
+  this Mac's loopback (README "Results (day 3)"). The load test decides whether to batch the totals in the
+  background, and whether to pipeline the cache write with them.
+- The cache doesn't stop a stampede: N identical requests at once all miss and all go upstream. A single flight per
+  key (in one gateway) or a lock in Redis (across gateways) is the fix if the load test shows it matters.
+- A rate limit counts requests; a client sending huge prompts spends tokens no request limit sees. A token limit
+  (charged after the answer, from the usage) is the next limit, and its bucket can go negative.
+- Day 4's metrics: client, rate-limit refusals, cache hits and misses, tokens and cost are in the log line already;
+  the counters should be the same facts.
