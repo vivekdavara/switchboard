@@ -66,8 +66,16 @@ type Config struct {
 	Models       []Model
 	RetryBudget  RetryBudget
 	Breaker      Breaker
+	// Redis is where rate limits, cached answers and usage totals live (day 3); nil if the file names none, and then
+	// there are no limits, no cache and no totals (the log still has every request's usage).
+	Redis *Redis
+	// Clients are the holders of keys for the gateway (day 3). With none, the gateway asks for no key, as on days 1
+	// and 2, and every request is counted as Anonymous's.
+	Clients []*Client
 
-	routes map[string]Model // by name and by alias
+	routes        map[string]Model // by name and by alias
+	clientsByHash map[[32]byte]*Client
+	prices        map[[2]string]Price // by provider and upstream model
 }
 
 // RetryBudget bounds the attempts the gateway makes after a request's first, across all requests: in any 10 seconds
@@ -96,6 +104,10 @@ type Provider struct {
 	// never logged.
 	APIKey    string
 	APIKeyEnv string
+	// StreamUsage says whether the gateway asks this provider for a stream's usage (stream_options.include_usage)
+	// when the client didn't, taking the usage out again before the client sees it (DESIGN.md, "Accounting"). On by
+	// default; turn it off for a provider that refuses stream_options.
+	StreamUsage bool
 }
 
 // Model is a model the gateway serves: its name, the other names clients may use for it, and the targets that can
@@ -109,6 +121,8 @@ type Model struct {
 	// It is at most len(Targets): a request never tries one target twice (a client's SDK retries on its own, with
 	// backoff).
 	MaxAttempts int
+	// Cache keeps this model's answers in Redis (day 3); nil: no caching.
+	Cache *Cache
 }
 
 // Target is one way to serve a model: a provider, and the provider's name for the model. A request's first attempt
@@ -165,7 +179,8 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 	var grace, drain string
 	var hosts []string
 	var providers, models []json.RawMessage
-	var budget, breaker json.RawMessage
+	var budget, breaker, redis json.RawMessage
+	var clients, prices []json.RawMessage
 	if err := decodeExact("the file", top, fields{
 		"listen":             &c.Listen,
 		"max_request_bytes":  &c.MaxRequestBytes,
@@ -177,6 +192,9 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 		"circuit_breaker":    &breaker,
 		"providers":          &providers,
 		"models":             &models,
+		"redis":              &redis,
+		"clients":            &clients,
+		"prices":             &prices,
 	}); err != nil {
 		return nil, err
 	}
@@ -252,6 +270,10 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 		}
 		c.Models = append(c.Models, m)
 	}
+	_, hasClients := member(top, "clients")
+	if err := c.parseDay3(clients, hasClients, redis, prices, byName, getenv); err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 
@@ -266,12 +288,18 @@ func parseModel(raw json.RawMessage, byName map[string]*Provider) (Model, error)
 	var provider, upstream string
 	var aliases []string
 	var targets []json.RawMessage
+	var cache json.RawMessage
 	maxAttempts := 0
 	if err := decodeExact("the model", members, fields{
 		"name": &m.Name, "aliases": &aliases, "provider": &provider, "upstream_model": &upstream,
-		"targets": &targets, "max_attempts": &maxAttempts,
+		"targets": &targets, "max_attempts": &maxAttempts, "cache": &cache,
 	}); err != nil {
 		return m, err
+	}
+	if cache != nil {
+		if m.Cache, err = parseCache(cache); err != nil {
+			return m, fmt.Errorf("cache: %w", err)
+		}
 	}
 	_, hasProvider := member(members, "provider")
 	_, hasUpstream := member(members, "upstream_model")
@@ -415,10 +443,11 @@ func parseProvider(raw json.RawMessage, getenv func(string) string) (*Provider, 
 	if err != nil {
 		return nil, err
 	}
-	p := &Provider{Timeout: DefaultTimeout}
+	p := &Provider{Timeout: DefaultTimeout, StreamUsage: true}
 	var base, timeout string
 	if err := decodeExact("the provider", members, fields{
 		"name": &p.Name, "base_url": &base, "api_key_env": &p.APIKeyEnv, "timeout": &timeout,
+		"stream_usage": &p.StreamUsage,
 	}); err != nil {
 		return nil, err
 	}
