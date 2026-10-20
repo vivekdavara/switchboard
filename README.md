@@ -618,6 +618,9 @@ does the same check before the first attempt, which is equivalent in practice.
 - A stream that breaks isn't counted (its provider may still bill the tokens it wrote), and neither are unanswered
   attempts before a fallback.
 - A key can't be revoked without a restart: the clients are read at start.
+- Taking a stream's usage out needs to read the chunk: one that isn't one JSON object to every parser (a key given
+  twice, invalid UTF-8) is sent as it came, usage and all, and a `usage` key written with escapes (`"\u0075sage"`)
+  isn't recognised, so it is neither taken out nor counted. No provider we know writes either.
 - No deadline across attempts: a request can wait up to `max_attempts` provider timeouts before its last answer
   (the client's own timeout bounds it; leaving cancels everything).
 - A target is never retried within a request, even after a 429 with a short `Retry-After`; the client's SDK retries.

@@ -21,7 +21,8 @@ Then the tests named below, and the `review_*_test.go` files, each of which star
 **Reading order for day 3:** DESIGN.md "Client keys", "Rate limits", "Caching", "Accounting" and "When Redis is
 down"; `internal/ratelimit/ratelimit.go` (the script, `Take`); `internal/gateway/clients.go` (`authenticate`,
 `rateLimit`); `internal/gateway/caching.go` (`lookup`, `serveHit`, `store`); `internal/cache/cache.go` (`Key`);
-`internal/gateway/accounting.go` (`upstreamBody`, `unasked`, `account`); `internal/openai/request.go`
+`internal/gateway/accounting.go` (`upstreamBody`, `unasked` with its fast path `unaskedNull`, `withData`, `account`,
+`afterAnswer`); `untilDone` in `internal/gateway/clients.go`; `internal/openai/request.go`
 (`WithModelAskingUsage`); `internal/usage/usage.go` (`Cost`, `USD`, `Totals.Add`); `internal/config/clients.go`
 (`microdollars`). Then `TestAFractionalRateAccumulates`, `TestNoTwoRequestsTakeTheSameToken`,
 `TestARateLimitedClientGetsA429ItsSDKWaitsFor`, `TestTheLimitCountsRequestsNotAttempts`,
