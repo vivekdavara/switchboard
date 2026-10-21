@@ -52,6 +52,7 @@ demo:
 # hanging until its 10 ms timeout) with breakers off and on, and the router's, budget's and breaker's cost per call.
 # Day 3 adds a request with a client key, the totals, the rate limit, and a cache miss and hit (the Redis round trips
 # are to the local Redis that make test starts), taking the usage out of a chunk, and one rate-limit check alone.
+# Day 4 adds the metrics' and the log line's cost at a request's end (observe, logExchange).
 bench: redis
 	go test -run '^$$' -bench Overhead -benchtime 20000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench Pool -benchtime 3000x -count 6 ./internal/gateway
@@ -62,6 +63,7 @@ bench: redis
 	go test -run '^$$' -bench Day3 -benchtime 5000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench Unasked -benchtime 1000000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench Take -benchtime 20000x -count 6 ./internal/ratelimit
+	go test -run '^$$' -bench 'Observe|LogLine' -benchtime 200000x -count 6 ./internal/gateway
 
 # Day 4: the real binaries under load against the mocks (README "Results (day 4)"; each case RUNS times, 3 by
 # default), and the chaos runs (a provider killed, a provider hung, Redis hung then shut down, under steady load; it
