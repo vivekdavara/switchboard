@@ -62,7 +62,10 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	client := o.Client
 	if client == nil {
 		t := http.DefaultTransport.(*http.Transport).Clone()
-		t.MaxIdleConnsPerHost = o.Concurrency // Go's default of 2 would open a new connection per request
+		// A connection per worker, kept: Go's default of 2 idle per host would open a new connection per request,
+		// and the default transport's 100 idle in all dropped the rest above 100 workers (found in the day-4 review).
+		t.MaxIdleConnsPerHost = o.Concurrency
+		t.MaxIdleConns = 0 // no limit in all
 		t.MaxConnsPerHost = 0
 		client = &http.Client{Transport: t}
 	}
