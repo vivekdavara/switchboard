@@ -86,6 +86,16 @@ func agreeWithTheLog(t *testing.T, samples map[string]float64, lines []map[strin
 		if a, ok := l["attempts"].(float64); ok {
 			attempts += a
 		}
+		tried, _ := l["tried"].([]any)
+		for _, a := range tried { // an earlier attempt's usage, reported before it failed
+			a := a.(map[string]any)
+			if p, ok := a["prompt_tokens"].(float64); ok {
+				uncountedPrompt += p
+			}
+			if c, ok := a["completion_tokens"].(float64); ok {
+				uncountedCompletion += c
+			}
+		}
 		if p, ok := l["prompt_tokens"].(float64); ok && l["uncounted"] == true {
 			uncountedPrompt += p
 			uncountedCompletion += l["completion_tokens"].(float64)

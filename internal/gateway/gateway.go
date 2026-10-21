@@ -522,6 +522,23 @@ type attemptLog struct {
 	Outcome       string  `json:"outcome,omitempty"`
 	Code          string  `json:"code,omitempty"`    // the gateway's error, if the attempt ended in one
 	Skipped       string  `json:"skipped,omitempty"` // why the target wasn't tried
+	// The usage an attempt reported before it failed and another was tried (uncounted: its provider may still bill
+	// it; the day-4 second review). The last attempt's is the line's own prompt_tokens and completion_tokens.
+	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
+	CompletionTokens int64 `json:"completion_tokens,omitempty"`
+}
+
+// attemptUsage puts u on the last attempt's entries, in attempts and in tried.
+func (x *exchange) attemptUsage(u usage.Usage) {
+	if len(x.attempts) > 0 {
+		x.attempts[len(x.attempts)-1].PromptTokens, x.attempts[len(x.attempts)-1].CompletionTokens = u.Prompt, u.Completion
+	}
+	for i := len(x.tried) - 1; i >= 0; i-- {
+		if x.tried[i].Skipped == "" {
+			x.tried[i].PromptTokens, x.tried[i].CompletionTokens = u.Prompt, u.Completion
+			return
+		}
+	}
 }
 
 func (x *exchange) skip(t config.Target, why string) {
@@ -536,7 +553,11 @@ func (g *Gateway) try(w http.ResponseWriter, r *http.Request, x *exchange, t con
 	x.provider, x.upstreamModel = p.Name, t.UpstreamModel
 	x.upstreamSent, x.upstreamStatus = true, 0
 	// The usage is this attempt's: one read from a stream that then failed before its first chunk isn't the next
-	// attempt's (found in the day-3 second review).
+	// attempt's (found in the day-3 second review). Nor is it lost: it goes on that attempt's entry (the day-4
+	// second review found it dropped whenever a fallback followed).
+	if x.hasUsage {
+		x.attemptUsage(x.usage)
+	}
 	x.usage, x.hasUsage = usage.Usage{}, false
 	entry := attemptLog{Provider: p.Name, UpstreamModel: t.UpstreamModel}
 	sent := time.Now()

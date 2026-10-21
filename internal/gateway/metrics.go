@@ -114,14 +114,16 @@ func (m *metrics) observe(x *exchange) {
 		}
 		m.attempts.WithLabelValues(a.Provider, outcome).Inc()
 		m.upstream.WithLabelValues(a.Provider, outcome).Observe(a.Ms / 1000)
+		if a.PromptTokens != 0 || a.CompletionTokens != 0 { // an earlier attempt's usage: never counted
+			m.uncounted.WithLabelValues(clientLabel(x), a.Provider, a.UpstreamModel, "prompt").Add(float64(a.PromptTokens))
+			m.uncounted.WithLabelValues(clientLabel(x), a.Provider, a.UpstreamModel, "completion").
+				Add(float64(a.CompletionTokens))
+		}
 	}
 	if x.budgetSpent {
 		m.budget.Inc()
 	}
-	client := x.client
-	if client == "" {
-		client = config.Anonymous
-	}
+	client := clientLabel(x)
 	if x.limited {
 		result := x.rateLimit
 		if result == "" {
@@ -158,6 +160,14 @@ func (m *metrics) observe(x *exchange) {
 		m.uncounted.WithLabelValues(client, x.provider, x.upstreamModel, "prompt").Add(float64(x.usage.Prompt))
 		m.uncounted.WithLabelValues(client, x.provider, x.upstreamModel, "completion").Add(float64(x.usage.Completion))
 	}
+}
+
+// clientLabel is the client the request is counted for: Anonymous when the file names no clients.
+func clientLabel(x *exchange) string {
+	if x.client == "" {
+		return config.Anonymous
+	}
+	return x.client
 }
 
 // handler serves the metrics in Prometheus's text format (and OpenMetrics, if the scraper asks for it).
