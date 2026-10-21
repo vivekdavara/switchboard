@@ -1,5 +1,5 @@
 """Prints the medians of scripts/load.sh's runs as a Markdown table: one row per case, each column the median of its
-runs (and the runs' range for throughput). Usage: python3 scripts/load_table.py run/load/results.jsonl"""
+runs (and the runs' range for throughput), except "not 200", the sum over all of them. Usage: python3 scripts/load_table.py run/load/results.jsonl"""
 
 import json
 import statistics
@@ -13,7 +13,7 @@ def main(path: str) -> None:
         for line in f:
             d = json.loads(line)
             runs[d["case"]].append(d)
-    print("| case | runs | requests/s (median, range) | p50 | p90 | p99 | p99.9 | max | not 200 |")
+    print("| case | runs | requests/s (median, range) | p50 | p90 | p99 | p99.9 | max | not 200 (all runs) |")
     print("|---|---|---|---|---|---|---|---|---|")
     for case, rs in runs.items():
         med = lambda k: statistics.median(r[k] for r in rs)  # noqa: E731

@@ -352,6 +352,12 @@ func TestTheMetricsAreServedAsPrometheusText(t *testing.T) {
 	if rec := scrapeAs("127.0.0.1:9108", "/v1/models"); rec.Code != 404 {
 		t.Errorf("another path: %d", rec.Code)
 	}
+	post := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/metrics", nil)
+	req.Host = "127.0.0.1:9108"
+	if g.Metrics().ServeHTTP(post, req); post.Code != 405 {
+		t.Errorf("another method: %d", post.Code)
+	}
 	rec := scrapeAs("127.0.0.1:9108", "/metrics")
 	b, _ := io.ReadAll(rec.Body)
 	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/plain") {

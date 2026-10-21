@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeObservedConfig is writeConfig with extra top-level members (a metrics or log section).
@@ -136,5 +137,34 @@ func TestCheckPrintsTheLogWhenItIsntTheDefault(t *testing.T) {
 	if code := run(context.Background(), []string{"check", "-config", path}, noEnv, &out, io.Discard, nil); code != 0 ||
 		!strings.HasSuffix(out.String(), "\nlog: text from warn\n") {
 		t.Errorf("exit %d:\n%s", code, out.String())
+	}
+}
+
+func TestTheMetricsAnswerThroughTheDrain(t *testing.T) {
+	// The day-4 review's mutant M3: closing the metrics listener at the stop's start passed every test.
+	_, up := upstream(t, nil)
+	logs := &syncBuffer{}
+	addr, stop, code := start(t, writeObservedConfig(t, up.URL,
+		`"drain_delay":"1s","metrics":{"listen":"127.0.0.1:0"}`), logs)
+	m := metricsAddr(t, logs)
+	if status, _, err := chat(addr); err != nil || status != 200 {
+		t.Fatalf("%d %v", status, err)
+	}
+	stop()
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(logs.String(), `"msg":"draining"`); {
+		if time.Now().After(deadline) {
+			t.Fatalf("never drained:\n%s", logs)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if status, body := get(t, "http://"+m+"/metrics", ""); status != 200 ||
+		!strings.Contains(body, `switchboard_requests_total{code="",model="fast",status="200"} 1`) {
+		t.Errorf("during the drain: %d", status)
+	}
+	if status, _ := get(t, "http://"+addr+"/readyz", ""); status != 503 {
+		t.Errorf("readyz during the drain: %d", status)
+	}
+	if c := <-code; c != 0 {
+		t.Errorf("exit %d", c)
 	}
 }

@@ -56,6 +56,8 @@ them.
 | `GET /livez` | 200 while the process runs, whatever the `Host`. |
 | `GET /readyz` | 200 once the configuration is loaded and the listener is open; 503 during a stop's `drain_delay`. Any `Host`. |
 
+From day 4, `GET /metrics` is served on the metrics listener (`metrics.listen`), not on the API's port ("Metrics").
+
 Every error from the API's endpoints, the gateway's own included, has OpenAI's error shape, so SDKs read it like
 any other API error (the health endpoints answer in plain text, and so does net/http itself when it refuses a request
 before any handler runs: a malformed request line, headers over 1 MB):
@@ -688,8 +690,10 @@ Plus Go's runtime and the process's own (`go_*`, `process_*`).
   `state="open"` is the time it was open, and an open breaker whose cooldown has passed reads as half-open.
 - **Its own port**, not `/metrics` on the API's: scraping needs no client key, and the port can be firewalled apart.
   It checks `Host` as the API does (a DNS-rebinding page could otherwise read client names and spend), serves only
-  `GET /metrics`, keeps serving through the drain and the grace (a scrape then shows the stop), and closes last. A
-  `metrics.listen` equal to the API's `listen` is refused at load.
+  `GET` (and `HEAD`) `/metrics` (another method is 405, another path 404), keeps serving through the drain and the
+  grace (a scrape then shows the stop), and closes last. A `metrics.listen` with the API's port is refused at load,
+  whatever the hosts: on macOS `:8108` and `127.0.0.1:8108` both bind, and the more specific one takes every local
+  connection (found in the day-4 review).
 
 ## Logs (day 4)
 

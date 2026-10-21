@@ -21,6 +21,15 @@ mkdir -p "$out" bin
 go build -o bin/ ./cmd/...
 METRICS=http://127.0.0.1:9108/metrics
 
+# Every port must be free first: wait_for only curls a port, so a gateway or mock left from another run (or another
+# session) would answer in place of the one just started, and be measured (a hypothesis of the day-4 review).
+for port in 8108 8118 8119 9108; do
+  if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+    echo "port $port is already in use; stop whatever listens there first" >&2
+    exit 1
+  fi
+done
+
 pids=()
 cleanup() {
   for pid in "${pids[@]}"; do kill -CONT "$pid" 2>/dev/null || true; kill "$pid" 2>/dev/null || true; done

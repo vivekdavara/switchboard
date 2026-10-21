@@ -120,8 +120,8 @@ func NewTransport() *http.Transport {
 }
 
 // Metrics is the handler of the metrics listener (DESIGN.md, "Metrics (day 4)"): GET /metrics, in Prometheus's text
-// format, for a Host the API would allow too (a rebinding page could otherwise read every client's name and spend),
-// and 404 for anything else. main serves it on the configuration's metrics.listen, not on the API's port, so
+// format (HEAD too), for a Host the API would allow too (a rebinding page could otherwise read every client's name and
+// spend); another method is 405 and another path 404 (the mux's own plain-text answers). main serves it on the configuration's metrics.listen, not on the API's port, so
 // scraping needs no client key and the port can be firewalled apart.
 func (g *Gateway) Metrics() http.Handler {
 	mux := http.NewServeMux()
