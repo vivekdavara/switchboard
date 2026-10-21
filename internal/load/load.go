@@ -238,14 +238,18 @@ func Summarize(samples []Sample, elapsed time.Duration) Summary {
 	return s
 }
 
-// Percentile is the nearest-rank percentile p (0 < p <= 100) of sorted: the smallest value that at least p percent
-// of them are at most. 0 for none.
+// Percentile is the nearest-rank percentile p (0 < p <= 100, to four decimal places) of sorted: the smallest value
+// that at least p percent of them are at most. 0 for none. The rank is computed in integers: in floating point,
+// 99.9/100*1000 is 999.0000000000001, whose ceiling took the 1000th of 1000 for p99.9 (found in the day-4 review).
 func Percentile(sorted []time.Duration, p float64) time.Duration {
 	if len(sorted) == 0 {
 		return 0
 	}
-	rank := int(math.Ceil(p / 100 * float64(len(sorted))))
-	return sorted[min(max(rank, 1), len(sorted))-1]
+	const scale = 1_000_000 // p in millionths of the whole
+	millionths := int64(math.Round(p * scale / 100))
+	n := int64(len(sorted))
+	rank := (millionths*n + scale - 1) / scale // ceil(p/100 * n)
+	return sorted[min(max(rank, 1), n)-1]
 }
 
 // Step is one interval of a timeline.
