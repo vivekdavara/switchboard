@@ -602,37 +602,56 @@ got around to sending it. `TestAnOpenLoopCountsTheWaitAStallCausesAndAClosedLoop
 100 requests a second is about 25 slow requests open-loop, 1 closed-loop.
 
 **What does the gateway cost?**
-53 µs a request on loopback (0.097 against 0.044 ms straight to a no-latency mock), and +0.4 ms at the median against
+54 µs a request on loopback (0.097 against 0.043 ms straight to a no-latency mock), and +0.2 ms at the median against
 a provider that takes 360 ms at 600 requests a second. With a client key, a rate limit and the totals, two Redis round
-trips add 194 µs. Throughput at 32 in flight was 30,500 requests a second through the gateway on a laptop that also
-ran the load generator and the mock. The per-request log line had no measurable cost.
+trips add 197 µs. Throughput at 32 in flight was 31,247 requests a second through the gateway on a laptop that also
+ran the load generator and the mock. The per-request log line costs about 2 µs (`BenchmarkLogLine`, with the
+metrics' 0.44 µs in it); under load, runs with and without it overlap.
 
 **So did you batch the totals?**
-No. Day 3 left it open; the load test says it's 97 µs, a fraction of a percent of a real completion, and writing
+No. Day 3 left it open; the load test says it's 98 µs, a fraction of a percent of a real completion, and writing
 before the handler returns means every log line says whether its totals were written, and nothing is lost when a
 gateway dies. I'd batch if a provider answered in a millisecond, or if Redis were across a slow network.
 
 **What happens when a provider dies?**
 Killed (connections refused): nothing visible. Of 8,000 requests at 200 a second, all got a 200, p99 56 ms. The
-11 attempts that hit the dead provider fell back at once, its breaker opened after five failures in a row, and every
+12 attempts that hit the dead provider fell back at once, its breaker opened after five failures in a row, and every
 later request skipped it (4,010 skips) until probes: one 10 s later failed, one 20 s later found it back. Traffic
 returned 5 s after the provider did, because recovery waits for the next probe.
 
 **And when it hangs instead?**
 That's the expensive one. A stopped process still has its connections accepted by the kernel; nothing answers until
 the gateway's 2 s timeout. Every request sent before the breaker had heard of five timeouts (about 400 in 2 s) waited
-2 s and then fell back. The retry budget allowed 399 of those fallbacks and refused 6, which became 504s. That's the
+2 s and then fell back. The retry budget allowed 394 of those fallbacks and refused 11, which became 504s (6 in the first run). That's the
 budget's purpose: a dying provider shouldn't double the load on the healthy one. The levers are a shorter timeout per
 provider, or a breaker that counts slow attempts before they finish.
 
 **And Redis?**
-Hung, it cost 100 ms per Redis step for about two seconds, then almost nothing, which surprised me. Reading go-redis's
+Hung, it cost 100 ms per Redis step for about a second, then almost nothing, which surprised me. Reading go-redis's
 pool explained it: after `PoolSize` (80) dial errors in a row it fails every dial at once with the last error and
 re-dials once a second in the background. Dials started failing once the kernel's accept queue for the stopped Redis
-(128 on macOS) filled. With the default `on_error: allow`, all 8,000 requests were answered; 3,529 ran without a rate
+(128 on macOS) filled. With the default `on_error: allow`, all 8,000 requests were answered; about 3,510 ran without a rate
 limit, a cache or totals, and the metrics counted each.
 
 **What did the chaos run find?**
-A logging gap. With the log level at warn, those 3,529 requests all answered 200, so they logged nothing: the log
+A logging gap. With the log level at warn, those 3,500-odd requests all answered 200, so they logged nothing: the log
 showed no Redis outage at all. A failed Redis step now makes the line WARN whatever the status.
+
+**What did the review find in day 4's code?**
+One agent reviewed it at `2b5b865` for 11 minutes and reproduced seven bugs, each kept as a `review_d4_*` test. Two
+broke the "metrics are the log's facts" claim: a cache write that worked erased the lookup's failure (the line said
+`unavailable` with no error, at INFO, and the metric missed it), and a stream that broke after its usage chunk was
+logged with tokens nothing counted (now `uncounted: true` in the log and `switchboard_uncounted_tokens_total`, since
+the provider may still bill them). Three were in loadgen and changed my numbers: p99.9 one rank too high, because
+`99.9/100*1000` is `999.0000000000001` in floating point (the rank is integer arithmetic now); only 100 idle
+connections kept in all, so it re-dialled above 100 workers; and the open loop's warmup sent as one burst, which put
+every chaos fault 0.85 s late on the timeline. One was macOS-specific: `:8108` and `127.0.0.1:8108` both bind, so a
+metrics listener on the API's port took the API's local traffic; the config now refuses the same port whatever the
+hosts. And a run stopped during the warmup reported a length of minus 292 years. I re-ran every measurement after the
+fixes.
+
+**And the tests it showed were missing?**
+Five mutants survived: the WARN rule's rate-limit and cache conditions (only the totals' was pinned), the in-flight
+gauge (tests only read 0 at the end), the metrics staying up through the drain, loadgen's per-host connection limit,
+and the filter that drops unsent samples from a stopped run. Each has a test now that fails with the mutant.
 

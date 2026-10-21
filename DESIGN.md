@@ -702,8 +702,8 @@ default) has a line per chat completion; `warn` only the lines about trouble. A 
 the client got a 5xx, when a stream broke (it went out as a 200), or when a Redis step failed (the rate limit, the
 cache or the totals: the chaos run found that at `warn` 17 s of a Redis outage, all answered 200, logged nothing).
 Other lines: `host not allowed` and `client key refused` (WARN), `listening` (with the metrics address), `draining`,
-`stopping`, `stopped`. The per-request line costs nothing measurable under load (README "Results (day 4)": 30,527
-requests a second with it, 30,075 without, the runs' ranges overlapping).
+`stopping`, `stopped`. The per-request line is cheap: 2.1 µs with the metrics (`BenchmarkLogLine`), against the 54 µs the
+gateway adds to a request, and under load the runs with and without it overlap (README "Results (day 4)").
 
 The chat completion line's fields: `id`, `status`, `model` (as the client sent it), `ms`, `request_bytes`,
 `response_bytes`; and when they apply, `client`, `rate_limit`, `redis_err`, `provider`, `upstream_model`,
@@ -768,7 +768,7 @@ README "Results (day 4)" has both, with what they found.
   can't overflow and add up exactly.
 - **Totals written before the handler returns, not in the background.** Simpler, and every log line says whether its
   totals were written; the cost is a round trip, measured, for day 4 to weigh. Day 4 weighed it and kept it: about
-  97 µs a request on this Mac's loopback (`redis-c1` against `gateway-c1`, two round trips for 194 µs), against a
+  98 µs a request on this Mac's loopback (`redis-c1` against `gateway-c1`, two round trips for 197 µs), against a
   provider's hundreds of milliseconds; batching would save that and lose the per-line truth and exactness when a
   gateway dies with a batch unwritten.
 - **Metrics from the exchange, not counted along the way.** One `observe` call at the log line, reading the fields the
@@ -777,10 +777,10 @@ README "Results (day 4)" has both, with what they found.
 - **Metrics on their own port.** No client key for a scraper, and a port the API's clients never reach.
 - **An open loop for latency, a closed loop for throughput.** A closed loop hides stalls (coordinated omission); and
   with every answer taking the same time, a closed loop of 256 workers sends in waves of 256 at once, so its median
-  measured the queue within a wave (+5 ms through the gateway in a trial run, against +0.4 ms at a steady rate).
+  measured the queue within a wave (+5 ms through the gateway in a trial run, against +0.2 ms at a steady rate).
 - **No Redis breaker of the gateway's own.** go-redis already has one for dials: after `PoolSize` dial errors in a
   row it fails every dial at once with the last error and re-dials in the background once a second
-  (`internal/pool/pool.go`: `dialConn`, `tryDial`). With Redis hung, requests paid 100 ms a step for about 2 s, until
+  (`internal/pool/pool.go`: `dialConn`, `tryDial`). With Redis hung, requests paid 100 ms a step for about a second, until
   the kernel's accept queue (128 here) filled and dials began to fail; after that every step failed at once.
 
 ## Plan for days 4 and 5
@@ -840,6 +840,7 @@ What day 4 leaves for day 5:
 - The chaos runs show recovery waits for a breaker's probe: mock-b was back 5 s before traffic returned to it (the
   probe comes a cooldown after the last failure). A shorter cooldown trades that for more probes at a dead provider.
 - A hung provider costs its timeout to every request sent before the breaker hears of five timeouts: with a 2 s
-  timeout at 200 a second, about 400 requests waited 2 s, and the retry budget let 399 of them fall back (6 got 504).
+  timeout at 200 a second, about 400 requests waited 2 s, and the retry budget let 394 of them fall back (11 got 504;
+  6 in the first run).
   A shorter timeout per provider is the lever; so would be counting slow attempts as failures before they end.
 - The cache's stampede and the request-count rate limit (day 3's notes) are still open.
