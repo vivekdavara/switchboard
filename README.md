@@ -115,6 +115,12 @@ ok    sdk: a wrong key                    401 invalid_api_key
      bob  plain            1           0              5                 32  0.00001995         0         0
    carol  plain            2           0             10                  7   0.0000057         0         0
 total cost 0.00005055 USD
+
+ok    metrics: rate_limit_total{client="alice",result="allowed"} 2
+ok    metrics: rate_limit_total{client="alice",result="refused"} 1
+ok    metrics: cache_total{model="fast",result="hit"} 2
+...
+ok    no /metrics on the API's port      404
 all checks passed
 ```
 
@@ -128,7 +134,12 @@ requests at once and 60 a minute, so her third is a 429 (her second was a cache 
 second identical request is a hit; and carol, with a burst of 1, sends two requests through the OpenAI SDK, whose
 second gets a 429 that the SDK itself waits out (it reads `retry-after-ms`) before retrying: answered 1.02 s later,
 with no retry code of the client's. The stream bob asks for without `include_usage` has no usage in it, yet is
-counted, because the gateway asked for it and took it out again. `switchboard usage` prints the totals.
+counted, because the gateway asked for it and took it out again. `switchboard usage` prints the totals. Day 4's
+checks read that gateway's metrics (served on 127.0.0.1:9108) and compare 8 series with the requests the demo sent.
+
+To watch the metrics by hand, add `"metrics": {"listen": "127.0.0.1:9108"}` to the config and
+`curl -s 127.0.0.1:9108/metrics | grep ^switchboard_`; to put load on it, `go run ./cmd/loadgen -n 2000 -c 8` (or
+`-rate 100` for an open loop, `-timeline 1s` for a per-second view).
 
 To run it by hand, in three terminals:
 
