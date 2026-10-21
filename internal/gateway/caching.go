@@ -116,7 +116,10 @@ func (g *Gateway) store(r *http.Request, x *exchange, key string, ttl time.Durat
 	ctx, cancel := g.afterAnswer(r)
 	defer cancel()
 	kept, err := untilDone(ctx, func() (bool, error) { return g.cache.Put(ctx, key, e, ttl) })
-	x.cacheStored, x.cacheErr = kept, err
+	x.cacheStored = kept
+	if err != nil { // a write that works mustn't erase the lookup's failure (found in the day-4 review)
+		x.cacheErr = err
+	}
 }
 
 // keeping is the buffer a stream's bytes are kept in for the cache, or nil once they are past its limit.
