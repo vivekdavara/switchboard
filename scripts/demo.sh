@@ -3,6 +3,8 @@
 # requests through the gateway, checks each answer, and stops everything. CI runs it as a smoke test; `make demo`
 # runs it here. Logs go to run/ (gitignored). Needs curl.
 #
+# Day 4 adds checks of that gateway's metrics (on 127.0.0.1:9108) against the requests it was sent.
+#
 # Day 3's part runs the gateway again with client keys made for this run (run/day3.json, never checked in), a rate
 # limit, a cache and prices, against the Redis on 127.0.0.1:6382: the one already running there (CI's service
 # container, or make test's), or one it starts itself (redis-server) and stops at the end.
@@ -146,6 +148,7 @@ newkey carol
 cat >run/day3.json <<JSON
 {
   "listen": "127.0.0.1:8108",
+  "metrics": {"listen": "127.0.0.1:9108"},
   "redis": {"addr": "127.0.0.1:$REDIS_PORT", "prefix": "$prefix"},
   "clients": [
     {"name": "alice", "key_sha256": "$alice_hash", "rate_limit": {"requests_per_minute": 60, "burst": 2}},
@@ -192,6 +195,30 @@ fi
 echo
 bin/switchboard usage -config run/day3.json | tee run/usage.txt
 grep -qE '^ +bob +fast +1 +1 ' run/usage.txt || { echo "FAIL  bob's totals"; failures=$((failures + 1)); }
+echo
+
+# Day 4: the same requests in the metrics, served on their own port (the SDK's checks use carol and "plain" only, so
+# none of these depend on whether it ran).
+curl -s http://127.0.0.1:9108/metrics >run/metrics.txt
+metric() { # metric 'NAME{LABELS}' WANT
+  if grep -qxF "$1 $2" run/metrics.txt; then
+    printf 'ok    metrics: %s %s\n' "${1#switchboard_}" "$2"
+  else
+    printf 'FAIL  metrics: %s is not %s: %s\n' "$1" "$2" "$(grep -F "${1%%\{*}" run/metrics.txt | head -5)"
+    failures=$((failures + 1))
+  fi
+}
+metric 'switchboard_rate_limit_total{client="alice",result="allowed"}' 2
+metric 'switchboard_rate_limit_total{client="alice",result="refused"}' 1
+metric 'switchboard_cache_total{model="fast",result="hit"}' 2
+metric 'switchboard_cache_total{model="fast",result="miss"}' 2
+metric 'switchboard_cache_stored_total{model="fast"}' 2
+metric 'switchboard_completions_total{client="bob",provider="mock-a",upstream_model="mock-small"}' 2
+metric 'switchboard_refused_total{reason="missing_api_key"}' 1
+metric 'switchboard_breaker_state{provider="mock-a",state="closed"}' 1
+status=$(curl -s -o /dev/null -w '%{http_code}' "$GATEWAY/metrics" -H "Authorization: Bearer $alice_key")
+[[ $status == 404 ]] && printf 'ok    %-34s %s\n' "no /metrics on the API's port" "$status" ||
+  { echo "FAIL  the API's port answered /metrics with $status"; failures=$((failures + 1)); }
 echo
 echo "The day-3 gateway's log (run/switchboard-day3.log):"
 grep '"chat completion"' run/switchboard-day3.log | sed 's/^{"time":"[^"]*",//' | cut -c1-200
