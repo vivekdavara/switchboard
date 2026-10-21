@@ -13,6 +13,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+
+	"github.com/vivekdavara/switchboard/internal/redistest"
 )
 
 // scrape returns every sample of g's metrics as `name{label="value",...}` (labels sorted by name; a histogram as its
@@ -404,5 +406,51 @@ func TestAnAnswerWhoseRedisStepsFailedIsLoggedAtWarn(t *testing.T) {
 	if len(lines) != 2 || lines[0]["level"] != "WARN" || lines[0]["status"] != 200.0 || lines[1]["level"] != "WARN" ||
 		lines[1]["totals_err"] == nil || lines[1]["rate_limit"] != nil {
 		t.Errorf("%v", lines)
+	}
+}
+
+func TestAFailedRateLimitCheckAloneMakesTheLineWarn(t *testing.T) {
+	// Only the rate-limit step fails: the bucket's key holds a hash, so the script's GET is WRONGTYPE; the totals (and
+	// everything else) still work. (The day-4 review's mutant M1: only the totals step was pinned at WARN.)
+	rdb, prefix := redistest.Client(t)
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	srv, g, logs := gatewayFor(t, fmt.Sprintf(`"redis":{"addr":%q,"prefix":%q},`, redistest.Addr(t), prefix)+
+		clients("alice:60:5"), []string{at(up, "")}, "fast=p0/mock-small")
+	if err := rdb.HSet(context.Background(), g.limiter.Key("alice"), "x", "1").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if resp, b := send(t, srv, ask, as("alice")...); resp.StatusCode != 200 {
+		t.Fatalf("%d %s", resp.StatusCode, b)
+	}
+	l := logLines(t, logs, "chat completion")[0]
+	if l["level"] != "WARN" || l["rate_limit"] != "unavailable" || l["redis_err"] == nil || l["totals_err"] != nil {
+		t.Errorf("%v", l)
+	}
+	want(t, scrape(t, g), map[string]float64{
+		`switchboard_redis_errors_total{step="rate_limit"}`:                 1,
+		`switchboard_rate_limit_total{client="alice",result="unavailable"}`: 1,
+	})
+}
+
+func TestTheInFlightGaugeCountsARequestWhileItRuns(t *testing.T) {
+	// The day-4 review's mutant M2: removing the gauge's Inc and Dec passed, since the tests only read 0 afterwards.
+	cancelled := make(chan struct{}, 1)
+	up := newProvider(t, waiting(cancelled))
+	srv, g, _ := gatewayFor(t, "", []string{at(up, `"timeout":"300ms"`)}, "fast=p0/m")
+	done := make(chan struct{})
+	go func() { defer close(done); send(t, srv, ask) }()
+	for deadline := time.Now().Add(5 * time.Second); len(up.requests()) == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the request never reached the provider")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if n := scrape(t, g)[`switchboard_requests_in_flight{}`]; n != 1 {
+		t.Errorf("%g in flight while one request waits on its provider", n)
+	}
+	<-done
+	<-cancelled
+	if n := scrape(t, g)[`switchboard_requests_in_flight{}`]; n != 0 {
+		t.Errorf("%g in flight after it was answered", n)
 	}
 }
