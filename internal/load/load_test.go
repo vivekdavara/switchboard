@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -130,6 +131,26 @@ func TestATimeoutEndsARequest(t *testing.T) {
 	}
 }
 
+func TestPercentilesAgreeWithExactArithmetic(t *testing.T) {
+	// p given to four decimal places, as ten-thousandths of a percent: the nearest rank of n values is
+	// ceil(p10k * n / 10^6), in integers. Values such as 0.0157 aren't exact in floating point (truncating instead of
+	// rounding p * 10^4 got them wrong: the day-4 second review's surviving mutant).
+	// 157, 163 and 314 are three of those; n of 6400, 6150 and 3190 are where a millionth less changes their rank.
+	for _, p10k := range []int64{157, 163, 314, 1, 9999, 123456, 333333, 666667, 500000, 990000, 999000, 999900, 999999,
+		1000000} {
+		for _, n := range []int64{1, 2, 3, 7, 10, 99, 100, 101, 999, 1000, 1001, 3190, 4096, 6150, 6400, 30000, 123457} {
+			sorted := make([]time.Duration, n)
+			for i := range sorted {
+				sorted[i] = time.Duration(i + 1)
+			}
+			want := max((p10k*n+999_999)/1_000_000, 1)
+			if got := Percentile(sorted, float64(p10k)/10_000); int64(got) != want {
+				t.Errorf("p%g of %d: rank %d, want %d", float64(p10k)/10_000, n, got, want)
+			}
+		}
+	}
+}
+
 func TestPercentilesAreNearestRank(t *testing.T) {
 	var hundred []time.Duration
 	for i := 1; i <= 100; i++ {
@@ -180,10 +201,28 @@ func TestAnOpenLoopsTimelineStartsAfterItsWarmup(t *testing.T) {
 	// 20 warmup requests and 30 measured at 200 a second: the warmup takes 100 ms, and the measured requests are due
 	// from 0 to 145 ms of the run's own clock.
 	began := time.Now()
-	res, err := Run(context.Background(), Options{URL: srv.URL, Body: body, Requests: 30, Warmup: 20, Concurrency: 4,
-		Rate: 200})
+	var mu sync.Mutex
+	seen := map[int]int{} // body index -> times sent
+	res, err := Run(context.Background(), Options{URL: srv.URL, Requests: 30, Warmup: 20, Concurrency: 4, Rate: 200,
+		Body: func(i int) []byte {
+			mu.Lock()
+			seen[i]++
+			mu.Unlock()
+			return body(i)
+		}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Each warmup request once, with an index of its own, -20 to -1 (loadgen's -unique makes its body from it), then
+	// each measured one; nothing sent twice (the day-4 second review's mutants: a warmup sent in a burst too, or every
+	// warmup body the same, passed).
+	for i := -20; i < 30; i++ {
+		if seen[i] != 1 {
+			t.Errorf("body %d sent %d times", i, seen[i])
+		}
+	}
+	if len(seen) != 50 {
+		t.Errorf("%d distinct bodies, want 50", len(seen))
 	}
 	if res.Samples[0].Due != 0 || res.Samples[29].Due != 145*time.Millisecond {
 		t.Errorf("due at %s and %s, want 0 and 145 ms", res.Samples[0].Due, res.Samples[29].Due)
