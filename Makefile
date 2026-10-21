@@ -1,4 +1,4 @@
-.PHONY: bench build check cross demo fuzz lint redis redis-stop test
+.PHONY: bench build chaos check cross demo fuzz lint load redis redis-stop test
 
 # The Redis the tests use (day 3): a project-local one on 6382, started by `make test` if none answers there, keeping
 # nothing on disk. Tests that need Redis are skipped when SWITCHBOARD_TEST_REDIS is unset (a plain `go test ./...`),
@@ -62,6 +62,15 @@ bench: redis
 	go test -run '^$$' -bench Day3 -benchtime 5000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench Unasked -benchtime 1000000x -count 6 ./internal/gateway
 	go test -run '^$$' -bench Take -benchtime 20000x -count 6 ./internal/ratelimit
+
+# Day 4: the real binaries under load against the mocks (README "Results (day 4)"; each case RUNS times, 3 by
+# default), and the chaos runs (a provider killed, a provider hung, Redis hung then shut down, under steady load; it
+# runs its own Redis on 6382, so it shuts down any other there first). Both need a quiet machine.
+load: redis
+	scripts/load.sh
+
+chaos:
+	scripts/chaos.sh
 
 # Builds for the other platforms, as CI does: a Unix-only call (syscall.Kill) once broke the Windows build unnoticed.
 cross:

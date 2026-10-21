@@ -7,7 +7,7 @@ routing by weights and aliases, fallback with retry budgets and circuit breakers
 response caching, and token and cost accounting, each measured against local mock providers that simulate latency
 and errors.
 
-**Status: day 3 of 5.** Day 1 built the request path: strict request reading, routing by model, forwarding with the
+**Status: day 4 of 5.** Day 1 built the request path: strict request reading, routing by model, forwarding with the
 provider's key, and a fixed mapping of every provider answer and failure to what the client gets, with a
 deterministic mock provider, a graceful shutdown, a demo of the real binaries and a check with the official OpenAI
 Python SDK. Day 2 puts weighted targets and aliases behind each model, falls back across them (never resending to a
@@ -17,7 +17,11 @@ event and an error event after it. Day 3 puts client keys in front (the file hol
 bucket per client in Redis (one Lua script, Redis's clock, a 429 the OpenAI SDK waits out by itself), a response
 cache per model (answers only, per client unless shared), and accounting: every completion's tokens from the
 provider's own `usage` (for a stream whose client didn't ask, the gateway asks and takes it out again), priced in
-integer picodollars, and daily totals per client. See [DESIGN.md](DESIGN.md) for the specification and the plan.
+integer picodollars, and daily totals per client. Day 4 adds Prometheus metrics on a port of their own (the log
+line's facts as counters, the cost kept exact), a log level and format, a load generator with an open loop that
+doesn't hide stalls, a load test against the mocks, and chaos runs: a provider killed, a provider hung, and Redis hung
+and shut down, all under steady load (README "Results (day 4)"). See [DESIGN.md](DESIGN.md) for the specification and
+the plan.
 
 ## Architecture
 
@@ -44,6 +48,7 @@ flowchart LR
     F -->|HTTP| A["mockprovider mock-a :8118"]
     F -->|HTTP| B["mockprovider mock-b :8119"]
     F -.->|"opt-in, a key from the environment"| L["a live provider"]
+    G -.->|"every request's facts"| X["GET /metrics<br/>(127.0.0.1:9108, its own port)"]
 ```
 
 | Package | What it does |
@@ -54,14 +59,16 @@ flowchart LR
 | `internal/route` | The order one request tries a model's targets in: by weight, standbys last. |
 | `internal/budget` | The retry budget: retries as a share of requests over the last 10 seconds. |
 | `internal/breaker` | A circuit breaker per provider: closed, open, half-open with one probe; results kept to their generation. |
-| `internal/gateway` | The handler: check, route, try each target (the fallback loop), map; the SSE relay (`stream.go`); client keys and the rate-limit step (`clients.go`), the cache step (`caching.go`), accounting and taking a stream's usage back out (`accounting.go`). |
+| `internal/gateway` | The handler: check, route, try each target (the fallback loop), map; the SSE relay (`stream.go`); client keys and the rate-limit step (`clients.go`), the cache step (`caching.go`), accounting and taking a stream's usage back out (`accounting.go`); the Prometheus metrics, observed from each request's exchange (`metrics.go`, day 4). |
 | `internal/ratelimit` | A token bucket per client in Redis, kept as GCRA's one number, in one Lua script (day 3). |
 | `internal/cache` | Answers in Redis, keyed by the SHA-256 of everything that decides them (day 3). |
 | `internal/usage` | A completion's usage, its cost in integer picodollars, and daily totals per client and model in Redis (day 3). |
 | `internal/redistest` | Tests' Redis: the one `SWITCHBOARD_TEST_REDIS` names, under a prefix of each test's own. |
+| `internal/load` | Load: a closed loop or an open one (latency from each request's due time), percentiles, a timeline (day 4). |
 | `internal/mock` | A mock provider: latency, errors, hangs and cut-offs, plain or streamed, deterministic given a seed. |
 | `cmd/switchboard` | `serve`, `check`, `keygen`, `usage`, `version`; graceful shutdown. |
 | `cmd/mockprovider` | The mock provider as a server. |
+| `cmd/loadgen` | The load generator's command line (day 4). |
 
 ## Quick start
 
@@ -419,6 +426,87 @@ python3 scripts/bench_medians.py < run/bench-day3.txt
   the second is answered 1.02 s later, the SDK having read `retry-after-ms` and retried by itself (1.02, 1.02 and
   1.01 s in three demo runs).
 
+## Results (day 4)
+
+Measured on the same Apple M3 (8 cores), macOS 26.6.2, Go 1.27.1, Redis 8.8.0 on loopback, **on battery** (29% and
+28%, Low Power Mode off), other applications open, load average 3.2 to 3.8, no agent running: the load test at
+`f9b6d4c` (19:00 to 19:02), the chaos runs at `fc84bb2` (19:04 to 19:07). loadgen, the gateway and the mocks share
+the machine's cores, so the throughput is the whole setup's on one laptop, a lower bound on the gateway's own.
+Requests are synthetic; every number below is from these runs.
+
+```bash
+make redis               # the Redis on 6382 the redis cases use
+RUNS=3 scripts/load.sh   # each case 3 times; scripts/load_table.py prints the medians
+scripts/chaos.sh         # three 40 s phases; the timelines and metric changes go to run/chaos/
+```
+
+**Load** (medians of 3 runs, the throughput's range in brackets; closed loops unless marked; every request got a 200):
+
+| Case | requests/s | p50 | p90 | p99 | p99.9 |
+|---|---|---|---|---|---|
+| straight to the mock, 1 at a time | 21,631 [21,551, 21,680] | 0.044 ms | 0.051 ms | 0.102 ms | 0.221 ms |
+| through the gateway, 1 at a time | 9,952 [9,735, 9,971] | 0.097 ms | 0.107 ms | 0.197 ms | 0.337 ms |
+| the gateway with a key, a rate limit and the totals, 1 at a time | 3,396 [3,391, 3,398] | 0.291 ms | 0.305 ms | 0.394 ms | 0.599 ms |
+| straight to the mock, 32 at a time | 78,788 [76,305, 80,468] | 0.313 ms | 0.785 ms | 1.683 ms | 3.086 ms |
+| through the gateway, 32 at a time | 30,527 [29,936, 31,336] | 0.866 ms | 1.962 ms | 3.364 ms | 4.986 ms |
+| the same with the log at warn | 30,075 [28,207, 30,838] | 0.820 ms | 2.060 ms | 4.106 ms | 7.238 ms |
+| with the key, the rate limit and the totals, 32 at a time | 20,941 [20,621, 21,166] | 1.390 ms | 2.224 ms | 3.804 ms | 7.317 ms |
+| a mock answering in ~360 ms, straight, open loop at 600/s | 586 | 360.636 ms | 361.143 ms | 363.593 ms | 369.953 ms |
+| the same through the gateway | 586 | 361.048 ms | 361.998 ms | 365.062 ms | 369.428 ms |
+
+- **The gateway adds 53 µs** to a request at a time (0.097 against 0.044 ms; the in-process `BenchmarkOverhead` said
+  47 on day 3), and **0.4 ms at the median, 1.5 ms at p99** to a provider that takes 360 ms, with about 216 requests
+  in flight. (586 requests a second is 9,000 requests over the 15 s of sending plus the last answer's 360 ms.)
+- **Each Redis round trip is about 97 µs** here: a key, a rate limit and the totals (two round trips) add 194 µs one
+  at a time. That decided day 3's open question: the totals stay written before the handler returns. Batching them
+  would save 97 µs of a request that spends hundreds of milliseconds at its provider, and lose the log line's word on
+  whether they were written.
+- **The log line costs nothing measurable**: 30,527 requests a second with a line per request, 30,075 without, the
+  runs' ranges overlapping.
+- **Counting is exact under load**: the Redis case's totals and the plain case's metrics each count 112,500
+  completions (3 runs of 37,500 sent, warmups included), and `switchboard usage` priced 562,500 prompt and 3,600,000
+  completion tokens at $0.15 and $0.60 a million at exactly $2.244375.
+- **Why the slow case is an open loop**: with every answer taking the same time, a closed loop of 256 workers sends in
+  waves of 256 at once, and its median then measures the queue within a wave: +5 ms through the gateway in a trial
+  run, against +0.4 ms at a steady rate.
+
+**Chaos** (200 requests a second, 8,000 each, open loop; model `smart` is mock-b with mock-a as its fallback; mocks
+answer in about 54 ms; the provider timeout 2 s; the default breaker (5 failures, 10 s) and budget (20% + 1 a
+second)):
+
+| Phase | What happened to the dependency | Answered | p50 | p99 | max | What the metrics say |
+|---|---|---|---|---|---|---|
+| a provider killed | mock-b killed at 10 s (connections refused), started again at 25 s | 8,000 of 8,000 | 54.3 ms | 56.2 ms | 107 ms | 11 attempts lost (10 in flight, unanswered; 1 refused), each fell back; breaker opened 2 times; 4,010 skips |
+| a provider hung | mock-b stopped (SIGSTOP) at 10 s, continued at 25 s | 7,994; 6 got 504 | 54.3 ms | 2,055 ms | 2,058 ms | 405 attempts lost (328 unanswered, 77 never delivered); the budget allowed 399 fallbacks and refused 6; breaker opened 2 times; 4,411 skips |
+| Redis hung, then down | stopped at 10 s, continued at 20 s, shut down at 25 s, started at 32 s | 8,000 of 8,000 | 54.2 ms | 255 ms | 456 ms | 3,529 requests without Redis: rate limit and cache `unavailable`, totals not written (3,514) |
+
+- **A killed provider costs nothing visible**: the refused and reset attempts fall back at once, the breaker opens
+  after five, and every later request skips mock-b until a probe 10 s later (which failed: opened again) and the next
+  one at about 30 s, which found it back. Traffic returned 5 s after mock-b did: recovery waits for the probe.
+- **A hung provider costs its timeout until the breaker hears**: the requests sent in the 2 s before five timeouts
+  had come back each waited 2 s, then fell back (from the timeline: p50 2,055 ms in seconds 11 and 12, then 54 ms
+  again from second 13 on):
+
+  ```
+      from    sent      ok  failed         p50         p99  X-Switchboard-Provider
+     10.0s     200     200       0    54.623ms  2055.152ms  mock-a 29, mock-b 171
+     11.0s     200     200       0  2055.033ms  2057.092ms  mock-a 200
+     12.0s     200     194       6  2054.409ms  2056.744ms  mock-a 194, mock-b 6
+     13.0s     200     200       0    53.676ms    54.724ms  mock-a 200
+  ```
+
+  Those ~400 fallbacks in 2 s were more than the budget's 20%: it refused 6, which became the 6 504s
+  (`upstream_timeout`). That is the budget doing its job, capping the extra load a failure puts on the other
+  provider; a shorter provider timeout is the lever that would have saved them.
+- **A hung Redis costs 100 ms a step for about 2 s, then nothing**: four Redis steps (limit, lookup, totals, keeping)
+  at their 100 ms timeout made p99 455 ms in seconds 10 and 11; then go-redis's own dial breaker took over. After
+  `PoolSize` (80 here) dial errors in a row its pool fails every dial at once and re-dials in the background once a
+  second (`internal/pool/pool.go`, `dialConn` and `tryDial`), and dials began to fail once the kernel's accept queue
+  for the stopped Redis (128 here, `kern.ipc.somaxconn`) was full. Linux's default of 4096 would make that take
+  longer. With `on_error: allow` (the default) every request was answered; the metrics counted each missed step.
+- **What it found**: with the log at warn, those 3,529 requests (all answered 200) logged nothing, so the log showed
+  no outage at all; a failed Redis step now makes the line WARN (`b123102`).
+
 ## Configuration
 
 `configs/local.json` routes three models (and an alias) to the two mocks; `smart` has a standby:
@@ -479,9 +567,13 @@ stream's usage). `configs/clients.example.json` has all of them:
 }
 ```
 
+Day 4's: `metrics` (`listen`, a `host:port` other than the API's) and `log` (`level`: `info`, the default, `warn` or
+`error`; `format`: `json`, the default, or `text`). `configs/clients.example.json` serves the metrics on 127.0.0.1:9108.
+
 The file is read strictly: a key given twice, a key in the wrong case, an unknown key or a null is an error that
-names it, not a silent default (145 kinds of mistake, 56 of them day 3's: a rate limit or a cache without Redis, two
-clients with one key, a price with an exponent or seven places...).
+names it, not a silent default (156 kinds of mistake, 56 of them day 3's: a rate limit or a cache without Redis, two
+clients with one key, a price with an exponent or seven places...; 11 day 4's, such as metrics on the API's own
+address).
 
 ## The mock provider
 
@@ -496,10 +588,10 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (235 test and fuzz functions, 156 of them
-before day 3; about 21 s, with the test Redis on 6382 started if none answers; coverage 96.7% across packages with
-`go test -coverpkg=./...`, and on their own: gateway 98.0%, config 99.2%, usage 95.7%, ratelimit 92.3%, cache 87.5%
-(its misses are errors `json.Compact` and `json.Marshal` can't return there). CI runs the same on Ubuntu 24.04 with
+`make check` runs gofmt, `go vet` and `go test -race` over every package (260 test and fuzz functions, 235 of them
+before day 4; about 25 s, with the test Redis on 6382 started if none answers; coverage 96.5% across packages with
+`go test -coverpkg=./...`, and on their own: gateway 98.2%, config 99.3%, breaker 97.1%, usage 95.7%, ratelimit 92.3%,
+load 91.7%, loadgen 90.7%, cache 87.5% (its misses are errors `json.Compact` and `json.Marshal` can't return there). CI runs the same on Ubuntu 24.04 with
 Redis 8 as a service container, then `make demo`'s script with the SDK checks (and its own Redis) as a second job.
 
 | Package | What the tests pin down |
@@ -517,7 +609,9 @@ Redis 8 as a service container, then `make demo`'s script with the SDK checks (a
 | `usage` (day 3) | usage from answers and chunks (missing, negative, too large, fractional, quoted counts are no usage); costs exact to the picodollar and written exactly; totals per day, client and model (a model name with a colon, the next UTC day), their expiry; a prefix with a `*` read as itself |
 | `cache` (day 3) | the key changes with the scope, the model, any byte of the request but whitespace, and parts can't run together; entries come back as they went (bytes of any kind), the size limit at its edge, unreadable entries are misses, the ttl |
 | `gateway`, day 3 | every way to send no key or a wrong one (401 for unknown paths too; health exempt; never logged; never upstream); limits per client, their headers, the 429's `Retry-After` and `retry-after-ms`, refilled a second later; requests not attempts; the limit before the body; Redis down (allow and refuse) and silent (bounded by its timeout); usage and exact costs per answer and stream (asked for or not, an alias, unpriced, no usage); a stream with the usage taken out against the mock's own, event for event, and OpenAI's `"usage": null` chunks; errors and broken streams uncounted; a cache hit byte for byte, misses, per client unless shared, only answers kept, `no-cache` and `no-store`, a stream's hit, Redis down |
-| `cmd/...` | serving, readiness and a clean stop; the drain (`/readyz` 503 while still answering); a request finishing within the grace; one still running after it getting a 503; a second signal ending the real binary at once; the server's timeouts; usage errors and exit codes |
+| `gateway`, day 4 | the metrics against the log's lines whatever the requests (one request per line by status and code, the attempts, tokens and cost), and exact values for fallback, a breaker opening and its skip, 404, 400, a stream, the budget refusing, rate limits, the cache per client, key and Host refusals, Redis down per step, a client leaving (499, `client_closed`); a cost exact over a million requests; the text format; the metrics handler's Host check; an answer whose Redis steps failed logged at WARN |
+| `load`, `loadgen` (day 4) | an open loop counting a stall's wait in every request it delays and a closed loop not (25 slow requests against 1); the warmup unmeasured; the rate kept; errors by kind; a timeout; nearest-rank percentiles; the timeline by due time; the key from the environment; bad arguments |
+| `cmd/...` | serving, readiness and a clean stop; the metrics on their own port (none on the API's, none of the API on theirs, a rebinding Host refused, closed after the stop), a busy metrics port, the log's level and format; the drain (`/readyz` 503 while still answering); a request finishing within the grace; one still running after it getting a 503; a second signal ending the real binary at once; the server's timeouts; usage errors and exit codes |
 
 Mutation checks, run by hand: 46 mechanisms removed or broken one at a time, and each made a test fail: 26 in the
 gateway (the header allowlist, the redirect rule, the 401 rule, the content type, the `Host` check with its
@@ -614,9 +708,14 @@ does the same check before the first attempt, which is equivalent in practice.
   it out again, rather than estimating tokens it has no tokenizer for.
 - **Money in integer picodollars.** Exact sums, and bounds that make overflow impossible.
 
-## Limitations (day 3)
+## Limitations (day 4)
 
-- No metrics (day 4).
+- A hung provider costs its timeout to every request sent to it before its breaker hears of five timeouts (with a
+  2 s timeout at 200 a second, about 400 requests; README "Results (day 4)"); a breaker that counts slow attempts
+  before they end would cut that.
+- Recovery waits for the breaker's next probe: up to a cooldown after a provider is back.
+- The metrics are per process: Prometheus adds up replicas; a breaker's state is each replica's own.
+- The load and chaos runs share one laptop with what they measure.
 - The retry budget and the breakers live in one gateway process: replicas don't share them (rate limits, the cache
   and the totals do, through Redis).
 - Rate limits count requests, not tokens: a client's huge prompts spend tokens no request limit sees.
