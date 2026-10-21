@@ -36,6 +36,7 @@ type metrics struct {
 	redisErrs *prometheus.CounterVec   // step
 	counted   *prometheus.CounterVec   // client, provider, upstream_model: completions added to the totals
 	tokens    *prometheus.CounterVec   // client, provider, upstream_model, kind
+	uncounted *prometheus.CounterVec   // client, provider, upstream_model, kind: reported, not counted
 	cost      *costs
 }
 
@@ -84,10 +85,14 @@ func newMetrics(breakers map[string]*breaker.Breaker) *metrics {
 		tokens: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "switchboard_tokens_total",
 			Help: "Tokens of counted completions, as the provider reported them, by kind: prompt, completion."},
 			[]string{"client", "provider", "upstream_model", "kind"}),
+		uncounted: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "switchboard_uncounted_tokens_total",
+			Help: "Tokens a provider reported for an answer that wasn't counted (a stream that broke or ended in an " +
+				"error after its usage chunk, a client that left): the provider may still bill them."},
+			[]string{"client", "provider", "upstream_model", "kind"}),
 		cost: newCosts(),
 	}
 	m.reg.MustRegister(m.requests, m.duration, m.inFlight, m.refused, m.attempts, m.upstream, m.skips, m.budget,
-		m.rateLimit, m.cache, m.stored, m.redisErrs, m.counted, m.tokens, m.cost,
+		m.rateLimit, m.cache, m.stored, m.redisErrs, m.counted, m.tokens, m.uncounted, m.cost,
 		&breakers_{breakers},
 		collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	return m
@@ -149,6 +154,9 @@ func (m *metrics) observe(x *exchange) {
 		if x.priced {
 			m.cost.add(client, x.provider, x.upstreamModel, x.cost)
 		}
+	} else if x.hasUsage { // the log line has these tokens too, marked uncounted (found in the day-4 review)
+		m.uncounted.WithLabelValues(client, x.provider, x.upstreamModel, "prompt").Add(float64(x.usage.Prompt))
+		m.uncounted.WithLabelValues(client, x.provider, x.upstreamModel, "completion").Add(float64(x.usage.Completion))
 	}
 }
 

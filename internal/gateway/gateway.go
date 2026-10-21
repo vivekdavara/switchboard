@@ -729,6 +729,9 @@ func (g *Gateway) logExchange(x *exchange) {
 	if x.hasUsage {
 		attrs = append(attrs, slog.Int64("prompt_tokens", x.usage.Prompt),
 			slog.Int64("completion_tokens", x.usage.Completion))
+		if !x.counted { // the provider reported them, but the answer broke or was an error: not in the totals
+			attrs = append(attrs, slog.Bool("uncounted", true))
+		}
 	}
 	if x.priced {
 		attrs = append(attrs, slog.String("cost_usd", usage.USD(x.cost)))

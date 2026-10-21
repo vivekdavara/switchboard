@@ -73,18 +73,21 @@ func want(t *testing.T, samples map[string]float64, expected map[string]float64)
 
 // agreeWithTheLog checks the invariants that hold between the metrics and the log's chat completion lines whatever
 // the requests were: one request per line, by status and code; their attempts; the tokens and cost of the counted
-// ones.
+// ones, and the tokens of the uncounted ones (a usage the provider reported for an answer that then broke).
 func agreeWithTheLog(t *testing.T, samples map[string]float64, lines []map[string]any) {
 	t.Helper()
 	byStatus := map[string]float64{}
-	var attempts, prompt, completion, cost float64
+	var attempts, prompt, completion, cost, uncountedPrompt, uncountedCompletion float64
 	for _, l := range lines {
 		code, _ := l["code"].(string)
 		byStatus[fmt.Sprintf("%v %s", l["status"], code)]++
 		if a, ok := l["attempts"].(float64); ok {
 			attempts += a
 		}
-		if p, ok := l["prompt_tokens"].(float64); ok {
+		if p, ok := l["prompt_tokens"].(float64); ok && l["uncounted"] == true {
+			uncountedPrompt += p
+			uncountedCompletion += l["completion_tokens"].(float64)
+		} else if ok {
 			prompt += p
 			completion += l["completion_tokens"].(float64)
 		}
@@ -127,6 +130,17 @@ func agreeWithTheLog(t *testing.T, samples map[string]float64, lines []map[strin
 	}
 	if c := sumKind(samples, "completion", ""); c != completion {
 		t.Errorf("completion tokens: %g in the metrics, %g in the log", c, completion)
+	}
+	for kind, want := range map[string]float64{"prompt": uncountedPrompt, "completion": uncountedCompletion} {
+		got := 0.0
+		for k, v := range samples {
+			if strings.HasPrefix(k, "switchboard_uncounted_tokens_total{") && strings.Contains(k, `kind="`+kind+`"`) {
+				got += v
+			}
+		}
+		if got != want {
+			t.Errorf("uncounted %s tokens: %g in the metrics, %g in the log", kind, got, want)
+		}
 	}
 	if c := sum(samples, "switchboard_cost_dollars_total"); fmt.Sprintf("%.9f", c) != fmt.Sprintf("%.9f", cost) {
 		t.Errorf("cost: %.12f in the metrics, %.12f in the log", c, cost)
