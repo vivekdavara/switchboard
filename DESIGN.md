@@ -9,7 +9,8 @@ that simulate latency and errors.
 
 This document is written before the code of each day and corrected after it. Day 1's part is the request path, the
 error mapping, the configuration and the mock providers; day 2's is routing, fallback, the retry budget, circuit
-breakers and streaming; day 3's is client keys, rate limits, caching and accounting, with Redis.
+breakers and streaming; day 3's is client keys, rate limits, caching and accounting, with Redis; day 4's is metrics,
+logs, and the load and chaos runs.
 
 ## Architecture
 
@@ -36,6 +37,8 @@ flowchart LR
     F -->|HTTP| A["mock-a :8118"]
     F -->|HTTP| B["mock-b :8119"]
     F -.->|"opt-in, a key from the environment"| L["a live provider"]
+    G -.->|"every request's facts"| X["GET /metrics<br/>(127.0.0.1:9108, its own port)"]
+    X --> S["Prometheus"]
 ```
 
 Day 1 had one provider per model. Day 2 puts a list of weighted targets behind each model, with fallback, a retry
@@ -633,6 +636,97 @@ As built on day 3:
   and `FuzzUnaskedsFastPathAgreesWithTheParse` (the fast path's cut against the parse). The review's 14 one-line
   survivors were each run as a mutant afterwards: 13 fail a test now, and the 14th went with the field it touched.
 
+As built on day 4:
+
+- Metrics against the log: a mix of requests (an answer, fallbacks, a breaker opening and a skip, 404, 400, a
+  stream; rate limits, the cache per client, key and Host refusals with Redis; Redis down; the budget refusing; a
+  client leaving), with exact values for each, and the invariants that hold between the metrics and the log's lines
+  whatever the requests. The cost's exactness over a million requests. The metrics port through the real `serve`.
+- The config's 11 new kinds of mistake; the log's three settings through `serve`.
+- `internal/load`: an open loop counting a stall's wait and a closed loop not (one worker, a 300 ms stall: about 25
+  slow requests against 1), the rate kept, errors by kind, timeouts, nearest-rank percentiles, the timeline.
+- Mutation checks by hand as before (the commit messages list them).
+
+## Metrics (day 4)
+
+With a `metrics` section (`{"listen": "127.0.0.1:9108"}`), `GET /metrics` serves Prometheus's text format on a
+listener of its own. Each chat completion is observed once, from the same exchange its log line is written from, right
+after the line: the counters are the log line's facts, so the two can't disagree (a test sends a mix of requests and
+checks the metrics against the log's lines: one request per line by status and code, the attempts, the tokens and
+the cost).
+
+| Metric | Labels | What it counts |
+|---|---|---|
+| `switchboard_requests_total` | model, status, code | chat completions answered (499 for a client that left) |
+| `switchboard_request_duration_seconds` | model, streamed | histogram, arrival to log line: the whole answer or stream |
+| `switchboard_requests_in_flight` | | chat completions being answered now |
+| `switchboard_refused_total` | reason | refused before any handler: `host_not_allowed`, `missing_api_key`, `invalid_api_key` |
+| `switchboard_attempts_total` | provider, outcome | attempts: `answered`, `failed`, `unanswered`, `client_closed` |
+| `switchboard_attempt_duration_seconds` | provider, outcome | histogram, send to outcome |
+| `switchboard_skips_total` | provider, reason | targets passed over: `circuit_open`, `unanswered_before` |
+| `switchboard_retry_budget_refusals_total` | | fallbacks the budget refused |
+| `switchboard_breaker_state` | provider, state | 1 for the state it is in now, 0 for the other two (read at scrape) |
+| `switchboard_breaker_opened_total` | provider | times it opened (read at scrape) |
+| `switchboard_rate_limit_total` | client, result | checks: `allowed`, `refused`, `unavailable` |
+| `switchboard_cache_total` | model, result | lookups: `hit`, `miss`, `bypass`, `refresh`, `unavailable` |
+| `switchboard_cache_stored_total` | model | answers kept |
+| `switchboard_redis_errors_total` | step | `rate_limit`, `cache`, `totals`: once per failing request and step |
+| `switchboard_completions_total` | client, provider, upstream_model | completions counted (as the totals count them) |
+| `switchboard_tokens_total` | client, provider, upstream_model, kind | their tokens, `prompt` and `completion`, as reported |
+| `switchboard_cost_dollars_total` | client, provider, upstream_model | their cost at the configured prices |
+
+Plus Go's runtime and the process's own (`go_*`, `process_*`).
+
+- **Bounded labels.** Every label value comes from the configuration (model, provider, upstream model and client
+  names) or from a fixed set (statuses, codes, outcomes, reasons), never from the request: a client naming a million
+  models would otherwise make a million series. The model is the configured name an alias resolves to; a model the
+  gateway doesn't serve, and a request refused before its model was read, is `model=""`.
+- **The cost is exact.** It is kept as integer picodollars per label set and turned into dollars only at the scrape;
+  adding each request's cost to a float counter would round at every request (a million $0.00000015 requests: exactly
+  $0.15 this way, $0.15000000000209981 as a float sum). The exact totals stay in Redis (`switchboard usage`).
+- **Breakers are read at scrape time**, not counted as they change: the state is a 1/0 per state, so a graph of
+  `state="open"` is the time it was open, and an open breaker whose cooldown has passed reads as half-open.
+- **Its own port**, not `/metrics` on the API's: scraping needs no client key, and the port can be firewalled apart.
+  It checks `Host` as the API does (a DNS-rebinding page could otherwise read client names and spend), serves only
+  `GET /metrics`, keeps serving through the drain and the grace (a scrape then shows the stop), and closes last. A
+  `metrics.listen` equal to the API's `listen` is refused at load.
+
+## Logs (day 4)
+
+The log is JSON lines on stderr (`log.format` `"text"` for logfmt-style text), from `log.level` up: `info` (the
+default) has a line per chat completion; `warn` only the lines about trouble. A chat completion's line is WARN when
+the client got a 5xx, when a stream broke (it went out as a 200), or when a Redis step failed (the rate limit, the
+cache or the totals: the chaos run found that at `warn` 17 s of a Redis outage, all answered 200, logged nothing).
+Other lines: `host not allowed` and `client key refused` (WARN), `listening` (with the metrics address), `draining`,
+`stopping`, `stopped`. The per-request line costs nothing measurable under load (README "Results (day 4)": 30,527
+requests a second with it, 30,075 without, the runs' ranges overlapping).
+
+The chat completion line's fields: `id`, `status`, `model` (as the client sent it), `ms`, `request_bytes`,
+`response_bytes`; and when they apply, `client`, `rate_limit`, `redis_err`, `provider`, `upstream_model`,
+`prompt_tokens`, `completion_tokens`, `cost_usd`, `totals_err`, `usage_asked`, `cache`, `cache_stored`, `cache_err`,
+`upstream_status`, `upstream_ms`, `attempts`, `tried` (each attempt and skip, when there is more than one, or a skip),
+`streamed` and `events`, `retry_budget_spent`, `code`, `err`. Never a message's content, a client's key or a
+provider's key.
+
+## Load and chaos (day 4)
+
+`loadgen` (`cmd/loadgen`, `internal/load`) sends chat completions and measures them. A closed loop (`-c` workers,
+each sending when its last answer is in) measures what the server sustains; an open loop (`-rate`) makes a request
+due every 1/R s and measures each from when it was due, so a stall shows in every request it delays (a closed loop
+measuring a server that stalls for a second sends nothing during that second, and records one slow request where
+real clients would have seen a second's worth: coordinated omission). Warmup requests come first and aren't measured;
+each worker keeps its connection; percentiles are nearest rank; a timeline steps by due time and counts an answer
+header's values (`X-Switchboard-Provider`) per step.
+
+- `scripts/load.sh`: the gateway's overhead and throughput against the mocks with no latency, straight and through
+  the gateway, with the log at info and at warn, with Redis (a key, a rate limit, the totals); and with mocks that
+  answer in ~360 ms, at a steady 600 requests a second. Three runs each; `scripts/load_table.py` prints the medians.
+- `scripts/chaos.sh`: three 40-second phases at a steady 200 requests a second: a provider killed, a provider hung
+  (SIGSTOP: it accepts connections and never answers), and Redis hung then shut down; the metrics scraped before and
+  after each.
+
+README "Results (day 4)" has both, with what they found.
+
 ## Decisions and alternatives
 
 - **Forward raw members, not structs.** Decoding into structs and encoding again is the easy way and loses every
@@ -669,7 +763,21 @@ As built on day 3:
 - **Integer picodollars, not floats.** Sums of floats drift and can't be checked against an invoice; bounded integers
   can't overflow and add up exactly.
 - **Totals written before the handler returns, not in the background.** Simpler, and every log line says whether its
-  totals were written; the cost is a round trip, measured, for day 4 to weigh.
+  totals were written; the cost is a round trip, measured, for day 4 to weigh. Day 4 weighed it and kept it: about
+  97 µs a request on this Mac's loopback (`redis-c1` against `gateway-c1`, two round trips for 194 µs), against a
+  provider's hundreds of milliseconds; batching would save that and lose the per-line truth and exactness when a
+  gateway dies with a batch unwritten.
+- **Metrics from the exchange, not counted along the way.** One `observe` call at the log line, reading the fields the
+  line reads, so the counters are the log's facts and a test can hold them to it; counting at each step would put
+  metric calls all through the request path and let the two drift.
+- **Metrics on their own port.** No client key for a scraper, and a port the API's clients never reach.
+- **An open loop for latency, a closed loop for throughput.** A closed loop hides stalls (coordinated omission); and
+  with every answer taking the same time, a closed loop of 256 workers sends in waves of 256 at once, so its median
+  measured the queue within a wave (+5 ms through the gateway in a trial run, against +0.4 ms at a steady rate).
+- **No Redis breaker of the gateway's own.** go-redis already has one for dials: after `PoolSize` dial errors in a
+  row it fails every dial at once with the last error and re-dials in the background once a second
+  (`internal/pool/pool.go`: `dialConn`, `tryDial`). With Redis hung, requests paid 100 ms a step for about 2 s, until
+  the kernel's accept queue (128 here) filled and dials began to fail; after that every step failed at once.
 
 ## Plan for days 4 and 5
 
@@ -677,8 +785,8 @@ As built on day 3:
   circuit breakers per provider, streaming passthrough (server-sent events, flushed per event), the mock streaming.
 - **Day 3 (done):** client keys, per-key token-bucket rate limits in Redis, response caching, token and cost
   accounting from the providers' `usage`, with daily totals per client.
-- **Day 4:** Prometheus metrics, structured logs; a load test against the mocks (latency overhead, throughput); a
-  chaos run with one provider down, measuring fallback.
+- **Day 4 (done):** Prometheus metrics (the log line's facts), the log's level and format, a load test against the
+  mocks (latency overhead, throughput), chaos runs (a provider killed, a provider hung, Redis hung and shut down).
 - **Day 5:** README with results, WALKTHROUGH.md, v1.0.0.
 
 What day 1 leaves for them to respect:
@@ -722,3 +830,12 @@ What day 3 leaves for them to respect:
   (charged after the answer, from the usage) is the next limit, and its bucket can go negative.
 - Day 4's metrics: client, rate-limit refusals, cache hits and misses, tokens and cost are in the log line already;
   the counters should be the same facts.
+
+What day 4 leaves for day 5:
+
+- The chaos runs show recovery waits for a breaker's probe: mock-b was back 5 s before traffic returned to it (the
+  probe comes a cooldown after the last failure). A shorter cooldown trades that for more probes at a dead provider.
+- A hung provider costs its timeout to every request sent before the breaker hears of five timeouts: with a 2 s
+  timeout at 200 a second, about 400 requests waited 2 s, and the retry budget let 399 of them fall back (6 got 504).
+  A shorter timeout per provider is the lever; so would be counting slow attempts as failures before they end.
+- The cache's stampede and the request-count rate limit (day 3's notes) are still open.
