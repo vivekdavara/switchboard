@@ -173,3 +173,22 @@ func TestBadOptionsAreRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestAnOpenLoopsTimelineStartsAfterItsWarmup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{}`)) }))
+	defer srv.Close()
+	// 20 warmup requests and 30 measured at 200 a second: the warmup takes 100 ms, and the measured requests are due
+	// from 0 to 145 ms of the run's own clock.
+	began := time.Now()
+	res, err := Run(context.Background(), Options{URL: srv.URL, Body: body, Requests: 30, Warmup: 20, Concurrency: 4,
+		Rate: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Samples[0].Due != 0 || res.Samples[29].Due != 145*time.Millisecond {
+		t.Errorf("due at %s and %s, want 0 and 145 ms", res.Samples[0].Due, res.Samples[29].Due)
+	}
+	if took := time.Since(began); took < 245*time.Millisecond {
+		t.Errorf("the run took %s; 50 requests at 200 a second take at least 245 ms", took)
+	}
+}

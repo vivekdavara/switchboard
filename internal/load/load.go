@@ -69,36 +69,44 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		t.MaxConnsPerHost = 0
 		client = &http.Client{Transport: t}
 	}
-	for i := 0; i < o.Warmup; {
-		var wg sync.WaitGroup
-		for w := 0; w < o.Concurrency && i < o.Warmup; w, i = w+1, i+1 {
-			wg.Add(1)
-			go func(i int) {
-				defer wg.Done()
-				send(ctx, client, o, o.Body(-1-i), time.Now(), time.Now())
-			}(i)
+	if o.Rate == 0 { // a closed loop's warmup: Concurrency at a time, as the loop itself sends
+		for i := 0; i < o.Warmup; {
+			var wg sync.WaitGroup
+			for w := 0; w < o.Concurrency && i < o.Warmup; w, i = w+1, i+1 {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					send(ctx, client, o, o.Body(-1-i), time.Now(), time.Now())
+				}(i)
+			}
+			wg.Wait()
 		}
-		wg.Wait()
 	}
 
 	samples := make([]Sample, o.Requests)
-	began := time.Now()
 	type job struct {
-		i   int
+		i   int // a warmup request's is negative
 		due time.Time
 	}
-	jobs := make(chan job, o.Requests)
+	var began time.Time
+	jobs := make(chan job, o.Warmup+o.Requests)
 	if o.Rate == 0 {
+		began = time.Now()
 		for i := range o.Requests {
 			jobs <- job{i: i} // due when a worker takes it
 		}
 		close(jobs)
 	} else {
+		// An open loop's warmup keeps the rate too, so the measured requests begin in the steady state, and the
+		// timeline's 0 s is the warmup's end (chaos.sh times its faults from it). Sent at once, as the closed loop's
+		// is, it was a burst the run then started behind (found in the day-4 review).
+		step := time.Duration(float64(time.Second) / o.Rate)
+		start := time.Now()
+		began = start.Add(time.Duration(o.Warmup) * step)
 		go func() {
 			defer close(jobs)
-			step := time.Duration(float64(time.Second) / o.Rate)
-			for i := range o.Requests {
-				due := began.Add(time.Duration(i) * step)
+			for k := range o.Warmup + o.Requests {
+				due := start.Add(time.Duration(k) * step)
 				if d := time.Until(due); d > 0 {
 					select {
 					case <-time.After(d):
@@ -106,7 +114,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 						return
 					}
 				}
-				jobs <- job{i, due}
+				jobs <- job{k - o.Warmup, due}
 			}
 		}()
 	}
@@ -123,6 +131,10 @@ func Run(ctx context.Context, o Options) (Result, error) {
 				}
 				if j.due.IsZero() {
 					j.due = time.Now()
+				}
+				if j.i < 0 {
+					send(ctx, client, o, o.Body(j.i), j.due, began) // warmup: not measured
+					continue
 				}
 				s, end := send(ctx, client, o, o.Body(j.i), j.due, began)
 				samples[j.i] = s
