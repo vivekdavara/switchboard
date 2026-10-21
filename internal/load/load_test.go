@@ -192,3 +192,34 @@ func TestAnOpenLoopsTimelineStartsAfterItsWarmup(t *testing.T) {
 		t.Errorf("the run took %s; 50 requests at 200 a second take at least 245 ms", took)
 	}
 }
+
+func TestAStoppedRunKeepsOnlyTheRequestsItSent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(10 * time.Millisecond)
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	res, err := Run(ctx, Options{URL: srv.URL, Body: body, Requests: 1000, Concurrency: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(res.Samples); n == 0 || n >= 100 {
+		t.Fatalf("%d samples from 100 ms of 2 workers at 10 ms a request", n)
+	}
+	for i, s := range res.Samples {
+		if s.Latency <= 0 && s.Err == "" {
+			t.Errorf("sample %d was never sent: %+v", i, s)
+		}
+		if s.Err != "" && s.Err != "context deadline exceeded" {
+			t.Errorf("sample %d: %q, not shortened to its kind", i, s.Err)
+		}
+	}
+	if res.Elapsed <= 0 || res.Elapsed > time.Second {
+		t.Errorf("elapsed %s", res.Elapsed)
+	}
+	if got := errorKind(context.Canceled); got != "context canceled" {
+		t.Errorf("%q", got)
+	}
+}

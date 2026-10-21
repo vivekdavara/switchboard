@@ -147,7 +147,10 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		}()
 	}
 	wg.Wait()
-	res := Result{Samples: samples, Elapsed: last.Sub(began)}
+	res := Result{Samples: samples}
+	if !last.IsZero() { // a run stopped before any measured request has none (found in the day-4 review)
+		res.Elapsed = last.Sub(began)
+	}
 	if ctx.Err() != nil {
 		n := 0
 		for _, s := range samples {
@@ -200,8 +203,8 @@ func send(ctx context.Context, client *http.Client, o Options, body []byte, due,
 // errorKind shortens a transport error to what it was, without the addresses, so equal failures count together.
 func errorKind(err error) string {
 	msg := err.Error()
-	for _, kind := range []string{"connection refused", "connection reset", "context deadline exceeded", "EOF",
-		"broken pipe", "timeout"} {
+	for _, kind := range []string{"connection refused", "connection reset", "context deadline exceeded",
+		"context canceled", "EOF", "broken pipe", "timeout"} {
 		if strings.Contains(msg, kind) {
 			return kind
 		}
