@@ -30,9 +30,10 @@ func (c *Config) parseDay4(metrics, logging json.RawMessage) error {
 		}
 		// The same port is refused whatever the hosts: ":8108" and "127.0.0.1:8108" both bind on macOS, and the more
 		// specific one then takes every local connection to the API's port (found in the day-4 review: the chat
-		// completions got the metrics handler's 404). Port 0 is a free port each, so two of them never clash.
-		_, port, _ := net.SplitHostPort(m.Listen)
-		if _, apiPort, _ := net.SplitHostPort(c.Listen); port == apiPort && port != "0" {
+		// completions got the metrics handler's 404). Ports compare as the numbers net.Listen reads, so "08108",
+		// "+8108" and a service name are caught too, and "", "0" and "00" are each a free port, which never clash
+		// (both found in the day-4 second review).
+		if port, apiPort := portNumber(m.Listen), portNumber(c.Listen); port == apiPort && port > 0 {
 			return fmt.Errorf("metrics: listen %q has the API's port (listen %q); give the metrics a port of their own",
 				m.Listen, c.Listen)
 		}
@@ -44,6 +45,19 @@ func (c *Config) parseDay4(metrics, logging json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+// portNumber is the port a host:port address listens on, as net.Listen reads it; -1 if it has none.
+func portNumber(addr string) int {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return -1
+	}
+	n, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 func parseMetrics(raw json.RawMessage) (*Metrics, error) {
