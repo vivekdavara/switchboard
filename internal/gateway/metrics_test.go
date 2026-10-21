@@ -323,8 +323,20 @@ func TestTheMetricsAreServedAsPrometheusText(t *testing.T) {
 	up := newProvider(t, mockProvider(t, "mock-a"))
 	srv, g, _ := gatewayFor(t, mini, []string{at(up, "")}, "fast=p0/mock-small")
 	send(t, srv, ask)
-	rec := httptest.NewRecorder()
-	g.Metrics().ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	scrapeAs := func(host, path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", path, nil)
+		req.Host = host
+		g.Metrics().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := scrapeAs("example.com", "/metrics"); rec.Code != 403 { // httptest's default Host: not allowed
+		t.Errorf("a Host the API refuses: %d", rec.Code)
+	}
+	if rec := scrapeAs("127.0.0.1:9108", "/v1/models"); rec.Code != 404 {
+		t.Errorf("another path: %d", rec.Code)
+	}
+	rec := scrapeAs("127.0.0.1:9108", "/metrics")
 	b, _ := io.ReadAll(rec.Body)
 	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/plain") {
 		t.Fatalf("%d %v", rec.Code, rec.Header())
@@ -335,6 +347,7 @@ func TestTheMetricsAreServedAsPrometheusText(t *testing.T) {
 		`# TYPE switchboard_request_duration_seconds histogram`,
 		`switchboard_breaker_state{provider="p0",state="closed"} 1`,
 		`# TYPE go_goroutines gauge`,
+		`switchboard_refused_total{reason="host_not_allowed"} 1`,
 	} {
 		if !strings.Contains(string(b), line+"\n") {
 			t.Errorf("no %q in:\n%s", line, b)

@@ -1,5 +1,6 @@
 {
   "listen": "127.0.0.1:8108",
+  "metrics": {"listen": "127.0.0.1:9108"},
   "redis": {"addr": "127.0.0.1:6382", "timeout": "100ms", "on_error": "allow"},
   "clients": [
     {"name": "alice", "key_sha256": "5b57e588e29a7945c4079881e696faeee1af133a26541a37307a520631e22fa7", "rate_limit": {"requests_per_minute": 60, "burst": 10}},

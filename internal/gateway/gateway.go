@@ -119,9 +119,24 @@ func NewTransport() *http.Transport {
 	return t
 }
 
-// Metrics serves the gateway's Prometheus metrics (DESIGN.md, "Metrics (day 4)"). The configuration's metrics.listen
-// is where main serves it; the API's own port doesn't, so scraping needs no client key and can be firewalled apart.
-func (g *Gateway) Metrics() http.Handler { return g.metrics.handler() }
+// Metrics is the handler of the metrics listener (DESIGN.md, "Metrics (day 4)"): GET /metrics, in Prometheus's text
+// format, for a Host the API would allow too (a rebinding page could otherwise read every client's name and spend),
+// and 404 for anything else. main serves it on the configuration's metrics.listen, not on the API's port, so
+// scraping needs no client key and the port can be firewalled apart.
+func (g *Gateway) Metrics() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", g.metrics.handler())
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !g.hostAllowed(r.Host) {
+			g.log.Warn("host not allowed", "host", r.Host, "method", r.Method, "path", r.URL.Path,
+				"remote", r.RemoteAddr)
+			g.metrics.refused.WithLabelValues("host_not_allowed").Inc()
+			http.Error(w, "the Host is not one this gateway answers to (allowed_hosts)", http.StatusForbidden)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
 
 // SetReady says whether GET /readyz answers 200.
 func (g *Gateway) SetReady(ready bool) { g.ready.Store(ready) }

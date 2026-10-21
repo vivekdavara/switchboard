@@ -7,12 +7,14 @@
 //	                                 print a day's totals (UTC; today by default) per client and model from Redis
 //	switchboard version              print the version, the commit and the Go release, and exit
 //
-// The configuration is a JSON file (DESIGN.md, "Configuration"); provider keys come from the environment variables
-// it names. Logs are JSON lines on stderr: one per chat completion, one per request refused for its Host, and the
-// server's own. A usage error exits 2; a configuration that doesn't load or a port that won't open exits 1; a stop by
-// SIGINT or SIGTERM exits 0, whether or not every request finished in the grace, and a second signal during the stop
-// ends the process at once, by that signal (or with exit status 130 if SIGINT was ignored when it started). Two
-// identical signals sent back to back can merge into one before any code sees them; DESIGN.md has why.
+// The configuration is a JSON file (DESIGN.md, "Configuration"); provider keys come from the environment variables it
+// names. Logs are JSON lines on stderr (or text, and from a level, as the file's log section says): one per chat
+// completion, one per request refused for its Host or its key, and the server's own. With a metrics section the
+// Prometheus metrics are served on a port of their own (GET /metrics). A usage error exits 2; a configuration that
+// doesn't load or a port that won't open exits 1; a stop by SIGINT or SIGTERM exits 0, whether or not every request
+// finished in the grace, and a second signal during the stop ends the process at once, by that signal (or with exit
+// status 130 if SIGINT was ignored when it started). Two identical signals sent back to back can merge into one before
+// any code sees them; DESIGN.md has why.
 package main
 
 import (
@@ -128,7 +130,16 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	case "usage":
 		return report(ctx, cfg, *day, stdout, stderr)
 	}
-	return serve(ctx, cfg, slog.New(slog.NewJSONHandler(stderr, nil)), listening)
+	return serve(ctx, cfg, newLogger(stderr, cfg.Log), listening)
+}
+
+// newLogger logs to w as the configuration says: JSON lines or text, from its level up.
+func newLogger(w io.Writer, c config.Log) *slog.Logger {
+	opts := &slog.HandlerOptions{Level: c.Level}
+	if c.Text {
+		return slog.New(slog.NewTextHandler(w, opts))
+	}
+	return slog.New(slog.NewJSONHandler(w, opts))
 }
 
 func printRoutes(w io.Writer, cfg *config.Config) {
@@ -166,6 +177,16 @@ func printRoutes(w io.Writer, cfg *config.Config) {
 		fmt.Fprintf(w, "model %s%s -> %s; %s%s\n", m.Name, aliases, strings.Join(targets, ", "), attempts, cache)
 	}
 	printDay3(w, cfg)
+	if cfg.Metrics != nil {
+		fmt.Fprintf(w, "metrics on %s (GET /metrics)\n", cfg.Metrics.Listen)
+	}
+	if cfg.Log != (config.Log{}) {
+		format := "json"
+		if cfg.Log.Text {
+			format = "text"
+		}
+		fmt.Fprintf(w, "log: %s from %s\n", format, strings.ToLower(cfg.Log.Level.String()))
+	}
 }
 
 // printDay3 prints Redis, the clients and the prices (day 3), when the file has them.
@@ -207,6 +228,14 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, listening 
 		log.Error("listen", "err", err)
 		return 1
 	}
+	var metricsLn net.Listener
+	if cfg.Metrics != nil {
+		if metricsLn, err = net.Listen("tcp", cfg.Metrics.Listen); err != nil {
+			ln.Close()
+			log.Error("listen", "metrics", true, "err", err)
+			return 1
+		}
+	}
 	g := gateway.New(cfg, nil, log)
 	defer g.Close()
 	// Every request's context derives from base, so cancelling it (with gateway.ErrShutdown as the cause) cancels
@@ -225,7 +254,16 @@ func serve(ctx context.Context, cfg *config.Config, log *slog.Logger, listening 
 	for i, m := range cfg.Models {
 		models[i] = m.Name
 	}
-	log.Info("listening", "addr", ln.Addr().String(), "providers", providers, "models", models)
+	attrs := []any{"addr", ln.Addr().String(), "providers", providers, "models", models}
+	if metricsLn != nil {
+		// The metrics keep being served through the drain and the grace (a scrape then shows the stop), and close
+		// last.
+		msrv := newServer(g.Metrics(), context.Background(), log)
+		go msrv.Serve(metricsLn)
+		defer msrv.Close()
+		attrs = append(attrs, "metrics", metricsLn.Addr().String())
+	}
+	log.Info("listening", attrs...)
 	if listening != nil {
 		listening <- ln.Addr().String()
 	}

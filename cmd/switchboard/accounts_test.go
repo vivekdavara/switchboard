@@ -63,7 +63,8 @@ func TestCheckPrintsDay3(t *testing.T) {
 		"client alice: 60 requests a minute, 10 at once\nclient bob: no rate limit\n",
 		"price mock-a mock-large: $2.5 in, $10 out per million tokens\n" +
 			"price mock-a mock-small: $0.15 in, $0.6 out per million tokens\n" +
-			"price mock-b mock-large: $2.5 in, $10 out per million tokens\n",
+			"price mock-b mock-large: $2.5 in, $10 out per million tokens\n" +
+			"metrics on 127.0.0.1:9108 (GET /metrics)\n",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("no %q in:\n%s", want, out.String())
