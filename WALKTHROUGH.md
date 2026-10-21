@@ -490,6 +490,14 @@ breaker; `X-Switchboard-Attempts: 0` and the original's bytes, `id` included.
 For a model whose answers should vary, yes, and that's why caching is per model and off by default. It suits
 deterministic calls (temperature 0, classification, extraction, evals run twice).
 
+**Reading order for day 4:** DESIGN.md "Metrics", "Logs" and "Load and chaos"; `internal/gateway/metrics.go`
+(`observe`, `costs`, `breakers_`), `logExchange` in `internal/gateway/gateway.go` (where `observe` is called, and the
+WARN rule), `Gateway.Metrics`; `serve` in `cmd/switchboard/main.go` (the metrics listener); `internal/config/observe.go`;
+`internal/load/load.go` (`Run`, `send`, `Percentile`, `Timeline`); `scripts/load.sh` and `scripts/chaos.sh`. Then
+`TestTheMetricsCountTheLogLinesFacts`, `agreeWithTheLog`, `TestACostIsExactHoweverManyRequestsAddUpToIt`,
+`TestTheMetricsAreServedOnTheirOwnPort`, `TestAnOpenLoopCountsTheWaitAStallCausesAndAClosedLoopDoesnt` and
+`TestAnAnswerWhoseRedisStepsFailedIsLoggedAtWarn`; and README "Results (day 4)".
+
 ## Accounting (day 3)
 
 **Where do the token counts come from?**
@@ -556,3 +564,75 @@ request is 285 µs at p50 against 87.5 µs without day 3, and a cache hit 227.5 
 Errors, broken streams (the provider may still bill the tokens it sent; the log line records the break), and
 attempts that went unanswered before a fallback, which may have cost something nobody can know. The log lines are
 the record to reconcile against a provider's invoice.
+
+## Metrics, load and chaos (day 4)
+
+**What do you measure, and where does it come from?**
+Every fact the per-request log line has, as a Prometheus counter: requests by model, status and the gateway's error
+code; duration; attempts and their duration by provider and outcome; skipped targets; budget refusals; rate-limit
+results; cache results; Redis failures per step; tokens and cost per client and provider model; breaker states.
+They're all filled in one place, `observe`, called right after the log line from the same `exchange` struct, so the
+two can't disagree. `agreeWithTheLog` in the tests reads the log lines back and checks the metrics against them.
+
+**Why not increment counters where things happen?**
+Then the metrics are a second account of the request, written in a dozen places, and nothing keeps them equal to
+the log. The exchange already records every decision for the log line; reading it once is less code and one truth.
+
+**How do you keep cardinality bounded?**
+No label value comes from the request. The model label is the configured name an alias resolves to, not what the
+client typed; an unknown model is `model=""`. Providers, upstream models and client names come from the config;
+statuses, codes, outcomes and reasons are fixed sets. A client sending a million made-up model names makes one series.
+
+**Why is the cost a custom collector?**
+Prometheus counters are float64. Adding each request's cost (around 10^-7 dollars) to a float rounds at every
+addition: a million $0.00000015 requests sum to $0.15000000000209981. The collector keeps exact int64 picodollars per
+label set and converts once, at the scrape, so it reads exactly $0.15. The invoice-grade totals are still Redis's.
+
+**Why a separate port for `/metrics`?**
+The API's port wants a client key on every path; a scraper shouldn't hold one, and the metrics port can be
+firewalled to the monitoring network. It still checks `Host` like the API, because metrics include client names and
+spend, and a DNS-rebinding page could otherwise read them. It keeps answering through the drain, so a scrape sees
+the stop, and closes last.
+
+**What's coordinated omission, and how does loadgen avoid it?**
+A closed-loop load generator sends its next request only after the last answer, so when the server stalls, the
+generator stalls too: it records one slow request, while real clients arriving at their own pace would all have
+waited. loadgen's open loop (`-rate`) gives every request a due time and measures from it, not from when a worker
+got around to sending it. `TestAnOpenLoopCountsTheWaitAStallCausesAndAClosedLoopDoesnt` shows it: one 300 ms stall at
+100 requests a second is about 25 slow requests open-loop, 1 closed-loop.
+
+**What does the gateway cost?**
+53 µs a request on loopback (0.097 against 0.044 ms straight to a no-latency mock), and +0.4 ms at the median against
+a provider that takes 360 ms at 600 requests a second. With a client key, a rate limit and the totals, two Redis round
+trips add 194 µs. Throughput at 32 in flight was 30,500 requests a second through the gateway on a laptop that also
+ran the load generator and the mock. The per-request log line had no measurable cost.
+
+**So did you batch the totals?**
+No. Day 3 left it open; the load test says it's 97 µs, a fraction of a percent of a real completion, and writing
+before the handler returns means every log line says whether its totals were written, and nothing is lost when a
+gateway dies. I'd batch if a provider answered in a millisecond, or if Redis were across a slow network.
+
+**What happens when a provider dies?**
+Killed (connections refused): nothing visible. Of 8,000 requests at 200 a second, all got a 200, p99 56 ms. The
+11 attempts that hit the dead provider fell back at once, its breaker opened after five failures in a row, and every
+later request skipped it (4,010 skips) until probes: one 10 s later failed, one 20 s later found it back. Traffic
+returned 5 s after the provider did, because recovery waits for the next probe.
+
+**And when it hangs instead?**
+That's the expensive one. A stopped process still has its connections accepted by the kernel; nothing answers until
+the gateway's 2 s timeout. Every request sent before the breaker had heard of five timeouts (about 400 in 2 s) waited
+2 s and then fell back. The retry budget allowed 399 of those fallbacks and refused 6, which became 504s. That's the
+budget's purpose: a dying provider shouldn't double the load on the healthy one. The levers are a shorter timeout per
+provider, or a breaker that counts slow attempts before they finish.
+
+**And Redis?**
+Hung, it cost 100 ms per Redis step for about two seconds, then almost nothing, which surprised me. Reading go-redis's
+pool explained it: after `PoolSize` (80) dial errors in a row it fails every dial at once with the last error and
+re-dials once a second in the background. Dials started failing once the kernel's accept queue for the stopped Redis
+(128 on macOS) filled. With the default `on_error: allow`, all 8,000 requests were answered; 3,529 ran without a rate
+limit, a cache or totals, and the metrics counted each.
+
+**What did the chaos run find?**
+A logging gap. With the log level at warn, those 3,529 requests all answered 200, so they logged nothing: the log
+showed no Redis outage at all. A failed Redis step now makes the line WARN whatever the status.
+
