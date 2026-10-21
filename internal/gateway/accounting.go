@@ -162,6 +162,7 @@ func (g *Gateway) account(r *http.Request, x *exchange, answer []byte) {
 	if answer != nil {
 		x.usage, x.hasUsage = usage.FromAnswer(answer)
 	}
+	x.counted = true
 	e := usage.Entry{Completions: 1}
 	switch p, priced := g.cfg.Price(x.provider, x.upstreamModel); {
 	case !x.hasUsage:

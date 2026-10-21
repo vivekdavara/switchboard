@@ -67,6 +67,8 @@ type Gateway struct {
 	limiter *ratelimit.Limiter
 	totals  *usage.Totals
 	cache   *cache.Cache
+
+	metrics *metrics
 }
 
 // New makes a gateway for cfg, forwarding through transport (NewTransport's if nil) and logging to log. It isn't
@@ -92,6 +94,7 @@ func New(cfg *config.Config, transport http.RoundTripper, log *slog.Logger) *Gat
 	for _, p := range cfg.Providers {
 		g.breakers[p.Name] = breaker.New(cfg.Breaker, nil)
 	}
+	g.metrics = newMetrics(g.breakers)
 	if cfg.Redis != nil {
 		redis.SetLogger(quiet{})
 		g.rdb = NewRedis(cfg.Redis)
@@ -116,6 +119,10 @@ func NewTransport() *http.Transport {
 	return t
 }
 
+// Metrics serves the gateway's Prometheus metrics (DESIGN.md, "Metrics (day 4)"). The configuration's metrics.listen
+// is where main serves it; the API's own port doesn't, so scraping needs no client key and can be firewalled apart.
+func (g *Gateway) Metrics() http.Handler { return g.metrics.handler() }
+
 // SetReady says whether GET /readyz answers 200.
 func (g *Gateway) SetReady(ready bool) { g.ready.Store(ready) }
 
@@ -136,6 +143,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !health && !g.hostAllowed(r.Host) {
 		g.log.Warn("host not allowed", "host", r.Host, "method", r.Method, "path", r.URL.Path,
 			"remote", r.RemoteAddr)
+		g.metrics.refused.WithLabelValues("host_not_allowed").Inc()
 		openai.WriteError(w, openai.Errorf(http.StatusForbidden, openai.TypeInvalidRequest, "", "host_not_allowed",
 			"the Host %q is not one this gateway answers to (allowed_hosts)", r.Host))
 		return
@@ -242,10 +250,14 @@ type exchange struct {
 	cacheStored     bool    // the answer was kept in the cache
 	cacheErr        error   // why the cache couldn't be read or written, for the log only
 	keep            keeping // a stream's bytes, for the cache
+	limited         bool    // the client's rate limit was checked (allowed, unless rateLimit says otherwise)
+	counted         bool    // the completion was counted for the totals (account ran)
 }
 
 func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
 	x := &exchange{id: g.newID(), began: time.Now()}
+	g.metrics.inFlight.Inc()
+	defer g.metrics.inFlight.Dec()
 	defer g.logExchange(x)
 	w.Header().Set("X-Request-Id", x.id)
 
@@ -748,6 +760,7 @@ func (g *Gateway) logExchange(x *exchange) {
 		level = slog.LevelWarn
 	}
 	g.log.LogAttrs(context.Background(), level, "chat completion", attrs...)
+	g.metrics.observe(x)
 }
 
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

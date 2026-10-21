@@ -42,6 +42,7 @@ type Breaker struct {
 	until      time.Time // while open: when it becomes half-open
 	probing    bool      // while half-open: a probe is out
 	generation uint64    // changes with every change of state
+	opened     uint64    // times it opened
 }
 
 // New makes a closed breaker with c's settings; now is its clock (time.Now if nil).
@@ -190,6 +191,14 @@ func (t *Ticket) report(ok, neutral bool) {
 func (b *Breaker) trip() {
 	b.set(Open)
 	b.until = b.now().Add(b.cooldown)
+	b.opened++
+}
+
+// Opened returns how many times the breaker has opened: from closed, or again from half-open after a failed probe.
+func (b *Breaker) Opened() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.opened
 }
 
 func (b *Breaker) set(s State) {

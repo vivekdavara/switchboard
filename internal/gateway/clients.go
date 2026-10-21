@@ -114,6 +114,7 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request) (*http.Re
 	refuse := func(code, reason, message string) (*http.Request, bool) {
 		g.log.Warn("client key refused", "reason", reason, "method", r.Method, "path", r.URL.Path,
 			"remote", r.RemoteAddr)
+		g.metrics.refused.WithLabelValues(code).Inc()
 		w.Header().Set("WWW-Authenticate", `Bearer realm="switchboard"`)
 		openai.WriteError(w, openai.Errorf(http.StatusUnauthorized, openai.TypeInvalidRequest, "", code, "%s",
 			message))
@@ -156,6 +157,7 @@ func (g *Gateway) rateLimit(w http.ResponseWriter, r *http.Request, x *exchange,
 		// on_error refuse, a stop during the check was answered rate_limit_unavailable).
 		return false
 	}
+	x.limited = true
 	if err != nil {
 		x.rateLimit, x.redisErr = "unavailable", err
 		if g.cfg.Redis.RefuseWhenDown {

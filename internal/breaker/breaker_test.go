@@ -289,3 +289,24 @@ func TestAProbesLateFailureWhileHalfOpenIsIgnored(t *testing.T) {
 		t.Errorf("%s", b.State())
 	}
 }
+
+func TestOpenedCountsEveryOpening(t *testing.T) {
+	b, c := setup()
+	for range 3 {
+		allow(t, b).Failure()
+	}
+	if b.Opened() != 1 {
+		t.Fatalf("opened %d times after tripping, want 1", b.Opened())
+	}
+	c.add(10 * time.Second)
+	allow(t, b).Failure() // the probe fails: open again
+	if b.Opened() != 2 || b.State() != Open {
+		t.Fatalf("opened %d times, %s; want 2, open", b.Opened(), b.State())
+	}
+	c.add(10 * time.Second)
+	allow(t, b).Success() // the probe succeeds: closed, no opening
+	allow(t, b).Failure()
+	if b.Opened() != 2 || b.State() != Closed {
+		t.Fatalf("opened %d times, %s; want 2, closed", b.Opened(), b.State())
+	}
+}
