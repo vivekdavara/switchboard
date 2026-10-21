@@ -28,10 +28,13 @@ func (c *Config) parseDay4(metrics, logging json.RawMessage) error {
 		if err != nil {
 			return fmt.Errorf("metrics: %w", err)
 		}
-		// Port 0 is a free port each, so two of them never clash (the tests listen that way).
-		if _, port, _ := net.SplitHostPort(m.Listen); m.Listen == c.Listen && port != "0" {
-			return fmt.Errorf("metrics: listen %q is the API's own address; give the metrics a port of their own",
-				m.Listen)
+		// The same port is refused whatever the hosts: ":8108" and "127.0.0.1:8108" both bind on macOS, and the more
+		// specific one then takes every local connection to the API's port (found in the day-4 review: the chat
+		// completions got the metrics handler's 404). Port 0 is a free port each, so two of them never clash.
+		_, port, _ := net.SplitHostPort(m.Listen)
+		if _, apiPort, _ := net.SplitHostPort(c.Listen); port == apiPort && port != "0" {
+			return fmt.Errorf("metrics: listen %q has the API's port (listen %q); give the metrics a port of their own",
+				m.Listen, c.Listen)
 		}
 		c.Metrics = m
 	}
