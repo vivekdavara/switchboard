@@ -771,7 +771,10 @@ func (g *Gateway) logExchange(x *exchange) {
 		attrs = append(attrs, slog.String("err", x.err.Error()))
 	}
 	level := slog.LevelInfo
-	if x.status >= 500 || (x.streamed && x.code != "") { // a stream that broke went out as a 200
+	// A stream that broke went out as a 200; so did an answer whose Redis steps failed, and a log at warn must still
+	// show Redis down (the day-4 chaos run logged nothing at warn for 17 s of it).
+	if x.status >= 500 || (x.streamed && x.code != "") || x.redisErr != nil || x.cacheErr != nil ||
+		x.totalsErr != nil {
 		level = slog.LevelWarn
 	}
 	g.log.LogAttrs(context.Background(), level, "chat completion", attrs...)

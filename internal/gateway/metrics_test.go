@@ -379,3 +379,16 @@ func TestAClientThatLeavesIsCountedAsA499AndAClosedAttempt(t *testing.T) {
 		`switchboard_requests_in_flight{}`:                                  0,
 	})
 }
+
+func TestAnAnswerWhoseRedisStepsFailedIsLoggedAtWarn(t *testing.T) {
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	srv, _, logs := gatewayFor(t, fmt.Sprintf(`"redis":{"addr":%q,"timeout":"50ms"},`, closedAddr(t))+
+		clients("alice:60:5", "bob"), []string{at(up, "")}, cached("fast", `{"ttl":"1m"}`), "plain=p0/mock-small")
+	send(t, srv, ask, as("alice")...)                                    // every step fails
+	send(t, srv, strings.Replace(ask, "fast", "plain", 1), as("bob")...) // only the totals
+	lines := logLines(t, logs, "chat completion")
+	if len(lines) != 2 || lines[0]["level"] != "WARN" || lines[0]["status"] != 200.0 || lines[1]["level"] != "WARN" ||
+		lines[1]["totals_err"] == nil || lines[1]["rate_limit"] != nil {
+		t.Errorf("%v", lines)
+	}
+}
