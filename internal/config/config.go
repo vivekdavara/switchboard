@@ -72,6 +72,11 @@ type Config struct {
 	// Clients are the holders of keys for the gateway (day 3). With none, the gateway asks for no key, as on days 1
 	// and 2, and every request is counted as Anonymous's.
 	Clients []*Client
+	// Metrics is where the Prometheus metrics are served (day 4); nil if the file names none: the gateway still
+	// counts, but nothing serves the counts.
+	Metrics *Metrics
+	// Log is how the gateway logs (day 4).
+	Log Log
 
 	routes        map[string]Model // by name and by alias
 	clientsByHash map[[32]byte]*Client
@@ -181,6 +186,7 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 	var providers, models []json.RawMessage
 	var budget, breaker, redis json.RawMessage
 	var clients, prices []json.RawMessage
+	var metrics, logging json.RawMessage
 	if err := decodeExact("the file", top, fields{
 		"listen":             &c.Listen,
 		"max_request_bytes":  &c.MaxRequestBytes,
@@ -195,6 +201,8 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 		"redis":              &redis,
 		"clients":            &clients,
 		"prices":             &prices,
+		"metrics":            &metrics,
+		"log":                &logging,
 	}); err != nil {
 		return nil, err
 	}
@@ -272,6 +280,9 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 	}
 	_, hasClients := member(top, "clients")
 	if err := c.parseDay3(clients, hasClients, redis, prices, byName, getenv); err != nil {
+		return nil, err
+	}
+	if err := c.parseDay4(metrics, logging); err != nil {
 		return nil, err
 	}
 	return c, nil
