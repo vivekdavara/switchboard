@@ -760,9 +760,10 @@ so the binary can't claim a version its commit doesn't have; the release check h
 Each step runs in the background with `set -e` and is waited for, so its first failing command fails it (as an
 `if` condition, bash ignored `set -e` inside it, and a step reported only its last command's status until the day-5
 second review); a fuzz name that matches no test fails too, since `go test -fuzz` only warns. `quick` stops after
-the demo (about a minute; the whole check takes three and a half). It measures nothing: the
-README's numbers come from `make bench`, `scripts/load.sh` and `scripts/chaos.sh`, which need a quiet machine. Its
-first full run failed `make check` on a data race in `loadgen` (below).
+the demo (about a minute; the whole check takes three and a half). It measures nothing: the README's numbers come
+from `scripts/results.sh` (which runs `scripts/load.sh`, `scripts/chaos.sh` and the benchmarks and keeps their outputs
+in `results/`) and `make bench`, which need a quiet machine. Its first full run failed `make check` on a data race in
+`loadgen` (below).
 
 **The first byte's time is atomic.** `loadgen` records when each answer's first byte arrived through httptrace's
 `GotFirstResponseByte`, which the transport calls from its own read loop. For a request whose deadline fires just as
@@ -774,7 +775,8 @@ and none after. The gateway's own trace (`delivered`, whether the provider got t
 
 **The docs are tested where v1.0.0 makes promises.** `internal/gateway/docs_test.go` holds DESIGN's metrics table to
 the registry (every metric a row with exactly its labels, and every row a metric), the README's configuration example
-to `configs/local.json`, and the README's error example to the gateway's answer for an unknown model.
+to `configs/local.json`, the README's error example to the gateway's answer for an unknown model, and every test,
+fuzz test and benchmark that the docs, the Makefile, CI and the scripts name to a declared function.
 
 **What 1.x keeps** (CHANGELOG.md): the API's paths, statuses, error codes and headers; the configuration's keys and
 what each means; the metric names and labels; the log line's fields; the Redis keys (`<prefix>ratelimit:<client>`,
@@ -792,7 +794,9 @@ consequences worth knowing:
 made in `ServeHTTP` now, before the Host and key checks, so their 401 and 403 carry it; `make check` runs the cross
 builds and the benchmarks, as CI does; the exit codes the release promises were settled first: `-h` exits 0 in every
 command, a bad `-day` is a usage error (2) whatever the file, and `loadgen` exits 1 when no request got any answer
-(answers of any status are results, and exit 0).
+(answers of any status are results, and exit 0). The second review, of those fixes, found the release check's `set -e`
+gap (above), the version step failing on an untracked file, `-h` still exiting 2 before a command, and `loadgen`
+counting a 200 that broke off as no answer; each is fixed and tested.
 
 ## Decisions and alternatives
 

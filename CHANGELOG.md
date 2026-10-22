@@ -58,6 +58,10 @@ The first release: an OpenAI-compatible gateway for `/v1/chat/completions`, buil
   the log line; `make check` runs everything CI's test job runs (the cross builds and the benchmarks too); `-h` exits 0
   in every command (it was a usage error's 2); `switchboard usage` with a bad `-day` exits 2 whatever the file;
   `loadgen` exits 1 when no request got any answer; the OpenAI SDK check sees the 429 it reports.
+- From the second review: the release check fails a step on its first failing command (it reported only the last),
+  fails at a tag whose tree has any change, compares the binary with every release tag on HEAD, and fails on a fuzz
+  name that matches no test; `switchboard -h`, `help`, `version -h` and `keygen -h` exit 0 too; `loadgen` counts a
+  200 that broke off as an answer.
 
 **What a 1.x release keeps.** The API's paths, status codes and error codes; the response headers
 (`X-Request-Id`, `X-Switchboard-Attempts`, `X-Switchboard-Provider`, `X-Switchboard-Cache`, the `x-ratelimit-*`

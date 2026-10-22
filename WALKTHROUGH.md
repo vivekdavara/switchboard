@@ -749,6 +749,40 @@ one-second wait (it now sees `[200, 429, 200]` through the SDK's HTTP client). A
 `-day` exited 1 or 2 depending on the file, and `loadgen` exited 0 when nothing was listening. I settled those before
 the tag, because v1.0.0 promises its exit codes.
 
+**And the second review?**
+It read only the 17 commits since the first, and found four bugs, three of them in that day's own new code, as on
+every earlier day. The worst was in the release check itself: `step` ran each step as `if ! "$@"`, and bash ignores
+`set -e` inside an `if` condition, functions included, so a step reported only its last command's status. A failing
+fuzz target passed unless it was the last of five, and a `go vet` failure on the clean export passed when the tests
+after it did. Each step now runs in a background subshell with `set -e` and is waited for. The others: an untracked
+file at the tag made the binary say `+dirty` and failed the version step with a misleading message (now any change at
+a tag fails it, listed); my `-h` fix covered only the commands with flags, not `switchboard -h` itself; and loadgen's
+new "no answer" exit counted a 200 that broke off mid-body as no answer, because the summary files those under
+errors. It also showed that `go test -fuzz` with a name that matches nothing passes with a warning, so a renamed fuzz
+target would quietly stop being fuzzed; the release check fails on that now, and the docs test reads the scripts'
+names too.
+
+**What's the lesson from the release check's bug?**
+That a check needs its own failing case. I had run it and watched it pass; I never made a step fail in the middle.
+The reviewer did, with `go` stubbed to fail one fuzz target. I checked the fix the same way, at top level as the
+script calls it: a function whose first command fails stops the check, where the old `step` printed "ok" and went on.
+
+**Did the numbers hold at the release?**
+I ran every day-4 measurement again at the release's code with `scripts/results.sh`, which keeps the raw outputs in
+`results/v1.0.0/`. One request at a time the gateway adds 56 µs (54 on day 4); 32 at a time it does 31,301 requests a
+second (31,247); two Redis round trips add 196 µs (197); and all 112,500 completions under load were counted and
+priced to exactly $2.244375 again. The one that moved: against a 360 ms provider at 600 a second, the median rose by
+0.42 ms instead of 0.17, in all three runs. Today's runs were on battery and day 4's on power, and the only code change
+on that path is the request id's context value; I report it rather than explain it.
+
+**And the chaos runs?**
+The same picture, with one difference that taught me something about my own budget. With the provider hung, all
+8,000 requests were answered this time, where day 4 had 11 504s. The budget counts ten one-second slots, the current
+partial one included, so at 200 a second it allows roughly 370 to 410 retries at a time, and about 400 fallbacks in two
+seconds sit right on that line: 405 attempts lost with 11 refused on day 4, 406 lost with none refused today. Neither
+run is wrong; the lesson is that a budget sized at 20% will clip a two-second hang at 200 requests a second, and the
+lever is the provider timeout, not the budget.
+
 **How would you run it in production?**
 Several replicas behind a load balancer, all naming one Redis, so rate limits, the cache and the totals are shared
 (the retry budget and the breakers stay per replica). TLS at the load balancer, since the gateway speaks plain HTTP.
