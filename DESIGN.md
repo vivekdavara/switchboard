@@ -909,3 +909,15 @@ What day 4 leaves for day 5:
   timeout bounds its whole answer.
   A shorter timeout per provider is the lever; so would be counting slow attempts as failures before they end.
 - The cache's stampede and the request-count rate limit (day 3's notes) are still open.
+
+What v1.0.0 leaves open (none of it scheduled), in the order the measurements argue for:
+
+- **A breaker that hears of slow attempts.** Counting an attempt still running past a threshold as a failure would
+  open the breaker on a hung provider within the threshold, not after five whole timeouts.
+- **A single flight per cache key**, so identical requests arriving together make one provider request; a lock in
+  Redis would do it across replicas.
+- **Token limits**, charged from the usage after the answer (a bucket that can go negative), beside the request limit.
+- **Configuration reload** (on SIGHUP, or a watched file), which revoking a key without a restart needs; the clients'
+  hashes are already a map that could be swapped whole.
+- **TLS on the listeners**, for deployments without a proxy in front.
+- **The retry budget and breaker state shared across replicas**, if one replica's view proves too slow to react.
