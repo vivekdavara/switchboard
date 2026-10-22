@@ -37,11 +37,15 @@ WARN rule), `Gateway.Metrics`; `serve` in `cmd/switchboard/main.go` (the metrics
 `TestTheMetricsAreServedOnTheirOwnPort`, `TestAnOpenLoopCountsTheWaitAStallCausesAndAClosedLoopDoesnt` and
 `TestAnAnswerWhoseRedisStepsFailedIsLoggedAtWarn`; and README "Results (day 4)".
 
-**Reading order for day 5:** CHANGELOG.md; DESIGN.md "The release (day 5)"; `scripts/release_check.sh` (`step`,
-`versions`, `clean_export`); `version` in `cmd/switchboard/main.go`; `send` in `internal/load/load.go` (the atomic
-first-byte time); `internal/gateway/docs_test.go`. Then `TestAFirstByteAtTheDeadlineIsNoRace`,
-`TestDesignsMetricsTableIsTheGatewaysMetrics`, `TestEveryTestTheDocsNameExists`, the `review_d5_*` files, and README
-"Results at a glance", "Results (v1.0.0)" and "Reviews and mutation checks".
+**Reading order for day 5:** CHANGELOG.md; DESIGN.md "The release (day 5)"; `scripts/release_check.sh` (`step`
+above all, then `versions`, `fuzz`, `clean_export`); `scripts/results.sh` and what it kept in `results/v1.0.0/`;
+`version`, `isHelp` and `run`'s start in `cmd/switchboard/main.go`; `ServeHTTP` and `withID` in
+`internal/gateway/gateway.go` (the request id made first); `send` and `newClient` in `internal/load/load.go`; the end
+of `run` in `cmd/loadgen/main.go`; `internal/gateway/docs_test.go`. Then `TestAFirstByteAtTheDeadlineIsNoRace`,
+`TestDesignsMetricsTableIsTheGatewaysMetrics`, `TestEveryTestTheDocsNameExists`,
+`TestTheJSONSummaryIsTheSummaryFieldForField`, `TestTheDefaultClientKeepsAConnectionPerWorker`, the `review_d5_*` and
+`review2_d5_*` files, and README "Results at a glance", "Results (v1.0.0)", "Release check" and "Reviews and mutation
+checks" (day 5).
 
 ## The project (day 1)
 
