@@ -624,7 +624,9 @@ That's the expensive one. A stopped process still has its connections accepted b
 the gateway's 2 s timeout. Every request sent before the breaker had heard of five timeouts (about 400 in 2 s) waited
 2 s and then fell back. The retry budget allowed 394 of those fallbacks and refused 11, which became 504s (6 in the first run). That's the
 budget's purpose: a dying provider shouldn't double the load on the healthy one. The levers are a shorter timeout per
-provider, or a breaker that counts slow attempts before they finish.
+provider, or a breaker that counts slow attempts before they finish. I measured the first: at 500 ms instead of 2 s,
+105 requests waited (half a second each) instead of about 400 (two seconds), all fell back, and none got a 504. The
+catch is that a plain request's timeout bounds its whole answer, so it only suits fast models or streams.
 
 **And Redis?**
 Hung, it cost 100 ms per Redis step for about a second, then almost nothing, which surprised me. Reading go-redis's

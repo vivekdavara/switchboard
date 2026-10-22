@@ -844,6 +844,7 @@ What day 4 leaves for day 5:
   probe comes a cooldown after the last failure). A shorter cooldown trades that for more probes at a dead provider.
 - A hung provider costs its timeout to every request sent before the breaker hears of five timeouts: with a 2 s
   timeout at 200 a second, about 400 requests waited 2 s, and the retry budget let 394 of them fall back (11 got 504;
-  6 in the first run).
+  6 in the first run). At 500 ms, 105 waited and none got a 504 (README "Results (day 4)"); but a plain request's
+  timeout bounds its whole answer.
   A shorter timeout per provider is the lever; so would be counting slow attempts as failures before they end.
 - The cache's stampede and the request-count rate limit (day 3's notes) are still open.

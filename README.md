@@ -524,6 +524,11 @@ failures, 10 s) and budget (20% + 1 a second); timeline seconds count from the w
   lost attempts split
   between "unanswered" and "never fully delivered" depends on which connections the pool had open: 140 and 265 here,
   328 and 77 in the battery run.
+- **A shorter timeout is that lever, measured**: the hung phase again with the providers' timeout at 500 ms
+  (`PHASES=provider-hung PROVIDER_TIMEOUT=500ms scripts/chaos.sh`, 20:01, at `df257d0`, on AC power): 8,000 of 8,000
+  answered, p99 555 ms; 105 attempts lost, all fell back, and the budget refused none. The price is the timeout's
+  meaning: for a plain request it bounds the whole answer, so 500 ms would cut off a real model writing a long one
+  (DESIGN "Timeouts and shutdown"); it suits a fast model, or streams, where it bounds each next event.
 - **A hung Redis costs 100 ms a step for about 1 s, then nothing**: four Redis steps (limit, lookup, totals, keeping)
   at their 100 ms timeout made p99 459 ms in second 10; then go-redis's own dial breaker took over. After `PoolSize`
   (80 here) dial errors in a row its pool fails every dial at once and re-dials in the background once a second

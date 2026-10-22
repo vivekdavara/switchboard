@@ -11,6 +11,9 @@
 #                    every lookup misses) and the totals. Redis is stopped (SIGSTOP) at 10 s and continued at 20 s,
 #                    then shut down at 25 s (connections refused) and started again at 32 s.
 #
+# PHASES picks some (default all three, in that order); PROVIDER_TIMEOUT sets the providers' timeout (default 2s), so
+# the hung phase can be run with another: PHASES=provider-hung PROVIDER_TIMEOUT=500ms scripts/chaos.sh.
+#
 # The mocks answer in about 52 ms (20 ms to the first token, 1 ms a token). The breaker and the retry budget are the
 # defaults (5 failures in a row open it for 10 s; retries up to 20% of requests plus 1 a second). Redis runs on 6382,
 # started here (one already there, such as make test's, is shut down first). Output in run/chaos/.
@@ -20,6 +23,8 @@ out=run/chaos
 mkdir -p "$out" bin
 go build -o bin/ ./cmd/...
 METRICS=http://127.0.0.1:9108/metrics
+PHASES=${PHASES:-provider-killed provider-hung redis-hung}
+PROVIDER_TIMEOUT=${PROVIDER_TIMEOUT:-2s}
 
 # Every port must be free first: wait_for only curls a port, so a gateway or mock left from another run (or another
 # session) would answer in place of the one just started, and be measured (a hypothesis of the day-4 review).
@@ -72,8 +77,8 @@ cat >"$out/chaos.json" <<JSON
   "clients": [{"name": "chaos", "key_sha256": "$hash",
     "rate_limit": {"requests_per_minute": 1000000, "burst": 100000}}],
   "providers": [
-    {"name": "mock-a", "base_url": "http://127.0.0.1:8118/v1", "timeout": "2s"},
-    {"name": "mock-b", "base_url": "http://127.0.0.1:8119/v1", "timeout": "2s"}
+    {"name": "mock-a", "base_url": "http://127.0.0.1:8118/v1", "timeout": "$PROVIDER_TIMEOUT"},
+    {"name": "mock-b", "base_url": "http://127.0.0.1:8119/v1", "timeout": "$PROVIDER_TIMEOUT"}
   ],
   "models": [
     {"name": "smart", "targets": [
@@ -144,9 +149,16 @@ redis_down() {
 }
 
 : >"$out/events.txt"
-phase provider-killed smart killed
-sleep 12 # the breaker's cooldown (10 s), so the next phase starts with it closed
-phase provider-hung smart hung
-sleep 12
-phase redis-hung fast redis_down
+first=1
+for name in $PHASES; do
+  # After a phase, the breaker's cooldown (10 s) and a probe's time, so the next one starts with it closed.
+  [[ -n $first ]] || sleep 12
+  first=
+  case $name in
+  provider-killed) phase provider-killed smart killed ;;
+  provider-hung) phase provider-hung smart hung ;;
+  redis-hung) phase redis-hung fast redis_down ;;
+  *) echo "no phase $name" >&2; exit 2 ;;
+  esac
+done
 cat "$out/events.txt"
