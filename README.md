@@ -7,21 +7,25 @@ routing by weights and aliases, fallback with retry budgets and circuit breakers
 response caching, and token and cost accounting, each measured against local mock providers that simulate latency
 and errors.
 
-**Status: day 4 of 5.** Day 1 built the request path: strict request reading, routing by model, forwarding with the
-provider's key, and a fixed mapping of every provider answer and failure to what the client gets, with a
-deterministic mock provider, a graceful shutdown, a demo of the real binaries and a check with the official OpenAI
-Python SDK. Day 2 puts weighted targets and aliases behind each model, falls back across them (never resending to a
-provider that may already have done the work), bounds the extra load with a retry budget, skips failing providers
-with a circuit breaker each, and streams: server-sent events relayed one at a time, with fallback until the first
-event and an error event after it. Day 3 puts client keys in front (the file holds only their SHA-256), a token
-bucket per client in Redis (one Lua script, Redis's clock, a 429 the OpenAI SDK waits out by itself), a response
-cache per model (answers only, per client unless shared), and accounting: every completion's tokens from the
-provider's own `usage` (for a stream whose client didn't ask, the gateway asks and takes it out again), priced in
-integer picodollars, and daily totals per client. Day 4 adds Prometheus metrics on a port of their own (the log
-line's facts as counters, the cost kept exact), a log level and format, a load generator with an open loop that
-doesn't hide stalls, a load test against the mocks, and chaos runs: a provider killed, a provider hung, and Redis hung
-and shut down, all under steady load (README "Results (day 4)"). See [DESIGN.md](DESIGN.md) for the specification and
-the plan.
+**Status: v1.0.0, released 2026-10-22, after five days of work** ([CHANGELOG.md](CHANGELOG.md) has what each day
+built and what a 1.x keeps; [DESIGN.md](DESIGN.md) the specification and the reasons; [WALKTHROUGH.md](WALKTHROUGH.md)
+the questions an interviewer is likely to ask).
+
+- **Day 1, the request path:** strict request reading, routing by model, forwarding with the provider's key, a fixed
+  mapping of every provider answer and failure to what the client gets, a deterministic mock provider, a graceful
+  stop, and a check with the official OpenAI Python SDK.
+- **Day 2, routing and failure:** weighted targets and aliases, fallback that never resends to a provider that may
+  already have done the work, a retry budget, a circuit breaker per provider, and streaming (server-sent events
+  relayed one at a time, with fallback until the first event and an error event after it).
+- **Day 3, clients and money:** client keys (the file holds only their SHA-256), a token bucket per client in Redis
+  (one Lua script, Redis's clock, a 429 the OpenAI SDK waits out by itself), a response cache per model, and
+  accounting from the provider's own `usage`, priced in integer picodollars, with daily totals per client.
+- **Day 4, observing and measuring:** Prometheus metrics on a port of their own (the log line's facts, the cost
+  exact), a load generator whose open loop doesn't hide stalls, a load test against the mocks, and chaos runs (a
+  provider killed, a provider hung, Redis hung and shut down) under steady load.
+- **Day 5, the release:** a release check, tests that hold the docs to the code, a whole-repo review and its fixes
+  (a request id missing from refusals, `make check` not running all of CI, untested load-table fields, exit codes),
+  every measurement run again at the release, and v1.0.0.
 
 ## Architecture
 
@@ -779,6 +783,27 @@ them: ports compared as strings (`08108` still shadowed `:8108`), and a failed a
 fallback answered (now on its `tried` entry and in the metric). The third reproduced none; its five surviving mutants
 (where a failed attempt's tokens land) and a port past 65535 passing `check` are each caught now. Of all three
 reviews' surviving mutants, every one fails a test now.
+
+### Day 5 (the release)
+
+One agent reviewed the whole repo at `68c7d45` (the end of day 4) for 16 minutes, asked for cross-day interactions and
+docs against code. The combinations it tried (an alias, a cache hit, a stream, a rate limit, fallback and a stop in
+one request; usage counted once; the metrics against the log line) held. It reproduced one bug: a chat completion
+refused for its Host (403) or key (401) was answered before the request id was made, so neither the answer nor its
+log line had one (`review_d5_request_id_on_refusals_test.go`; the id is made first now). And one process gap: README
+said `make check` runs what CI runs, but only CI cross-compiled and ran the benchmarks; `make check` runs both now.
+Its seven surviving mutants were mostly in what feeds the published numbers: no test read `loadgen`'s `-json` fields
+(swapping p99.9 for p99, the max for p99.9, or the throughput for requests over elapsed passed every test), which
+`load_table.py` turns into the load table; both are tested now. The others: the rate-limit script's expiry rounded
+down (at the fastest allowed rate, 1,000,000 a minute, Redis then refuses `PX 0` and every check fails), a cache hit's
+`upstream_model` and a streamed hit's `response_bytes` in the log line, and `check`'s word that a cache is shared:
+each fails a test now; one (`>= 500` as `> 500` in the WARN rule) is equivalent, since the gateway never answers 500
+itself. It also listed ten docs mismatches (fixed: `X-Switchboard-Provider` names the provider last tried, also on a
+502 or 504; no `x-ratelimit-*` headers when Redis couldn't say; an empty client list's error had its reason
+backwards...), a demo check that inferred a 429 from a wait (it sees the 429 now), and judgement calls on exit codes,
+settled before v1.0.0 promises them: `-h` exits 0, a bad `-day` 2, a `loadgen` run with no answer at all 1.
+
+Before the review, the release check's first full run had found a data race in `loadgen` ("Release check").
 
 ## Design decisions
 
