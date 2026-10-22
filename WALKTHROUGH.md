@@ -787,6 +787,14 @@ seconds sit right on that line: 405 attempts lost with 11 refused on day 4, 406 
 run is wrong; the lesson is that a budget sized at 20% will clip a two-second hang at 200 requests a second, and the
 lever is the provider timeout, not the budget.
 
+**How exact is "the provider got the whole request"?**
+Exact on the safe side only. It comes from httptrace's `WroteRequest`, and I read net/http to see when that fires: at
+the end of `Request.write`, which writes into the connection's buffered writer; the transport's write loop flushes
+the buffer afterwards. So a request can count as delivered while its bytes are still in the buffer, and if the flush
+fails, the gateway treats the attempt as one that may have done work and doesn't send it to that provider's other
+target. That costs a fallback option, never a duplicate. The other direction, a request fully sent but not yet
+reported when `Do` returns, needs a timeout firing within the nanoseconds between the last write and the hook.
+
 **How would you run it in production?**
 Several replicas behind a load balancer, all naming one Redis, so rate limits, the cache and the totals are shared
 (the retry budget and the breakers stay per replica). TLS at the load balancer, since the gateway speaks plain HTTP.

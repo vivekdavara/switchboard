@@ -1009,6 +1009,11 @@ against at most 272 seen without it), and a new test pins the client's settings.
   listener's queue when it closes is never served (seen in the mock's stop test). `drain_delay` with a load balancer
   in front is the cure.
 - A provider's error answer larger than `max_response_bytes` becomes a 502 and loses its status (the log keeps it).
+- "The provider got the whole request" (what makes a failure unanswered rather than failed) is httptrace's
+  `WroteRequest`, which net/http calls once the request is in the connection's write buffer, before it flushes it
+  (read in `net/http`'s `Request.write` and `persistConn.writeLoop`, Go 1.27.1). A flush that then fails counts as
+  possibly delivered, so that provider's other targets are skipped for the request: the safe side, since nothing is
+  sent twice.
 
 ## License
 
