@@ -5,7 +5,7 @@
 # every fuzz test and the coverage. Each step's output goes to run/release/<time>/<step>.txt; the check stops at the
 # first step that fails.
 #
-#   scripts/release_check.sh          all of it (about 4 minutes on an M3)
+#   scripts/release_check.sh          all of it (about 3.5 minutes on an M3)
 #   scripts/release_check.sh quick    the tests, the clean export, the version and the demo (about a minute)
 #
 # It measures nothing: README's numbers come from `make bench`, `scripts/load.sh` and `scripts/chaos.sh`. It needs the
@@ -105,7 +105,7 @@ EOF
 
 coverage() {
   go test -count=1 -coverpkg=./... -coverprofile="$dir/cover.out" ./... >/dev/null
-  go tool cover -func="$dir/cover.out" | tail -n 1
+  go tool cover -func="$dir/cover.out" | tail -n 1 | tr -s "\t" " "
 }
 
 echo "release check of $(git rev-parse --short=12 HEAD) ($(git describe --tags --always --dirty)), $(date)"

@@ -757,9 +757,9 @@ so the binary can't claim a version its commit doesn't have; the release check h
 | `fuzz` | 15 s of each of the five fuzz tests |
 | `coverage` | prints the total over every package (`-coverpkg=./...`) |
 
-`quick` stops after the demo (about a minute; the whole check about four). It measures nothing: the README's numbers
-come from `make bench`, `scripts/load.sh` and `scripts/chaos.sh`, which need a quiet machine. Its first full run
-failed `make check` on a data race in `loadgen` (below).
+`quick` stops after the demo (about a minute; the whole check takes three and a half). It measures nothing: the
+README's numbers come from `make bench`, `scripts/load.sh` and `scripts/chaos.sh`, which need a quiet machine. Its
+first full run failed `make check` on a data race in `loadgen` (below).
 
 **The first byte's time is atomic.** `loadgen` records when each answer's first byte arrived through httptrace's
 `GotFirstResponseByte`, which the transport calls from its own read loop. For a request whose deadline fires just as
