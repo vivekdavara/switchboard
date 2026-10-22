@@ -95,7 +95,16 @@ flowchart LR
 
 ## Quick start
 
-Go 1.27, curl and Redis (`redis-server`; the demo uses the one on 127.0.0.1:6382 if one answers, and otherwise
+To install the three commands (`switchboard`, `mockprovider`, `loadgen`) without cloning:
+
+```bash
+go install 'github.com/vivekdavara/switchboard/cmd/...@v1.0.0'
+```
+
+`switchboard version` then says `switchboard v1.0.0 (commit unknown, go1.27.1 darwin/arm64)`: a module download carries
+no git metadata, so only a build from a clone at the tag names its commit (checked after the release, 16:42).
+
+To run everything from a clone: Go 1.27, curl and Redis (`redis-server`; the demo uses the one on 127.0.0.1:6382 if one answers, and otherwise
 starts one and stops it after). `make demo` builds everything, starts two mock providers and the gateway, sends
 requests through it with curl (and with the OpenAI Python SDK, if it is installed), checks each answer, then runs the
 gateway again with day 3's client keys, made for the run, and stops everything:

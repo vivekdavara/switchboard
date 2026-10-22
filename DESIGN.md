@@ -741,8 +741,10 @@ README "Results (day 4)" has both, with what they found.
 
 **The version comes from the tag.** There is no version constant: `switchboard version` prints the module version the
 go command stamps into the binary from git (Go 1.24 and later), so a build at the `v1.0.0` tag with nothing changed
-says `switchboard v1.0.0 (commit ..., go1.27.1 darwin/arm64)`, a build after it a pseudo-version such as
-`v1.0.1-0.20261023...-abcdef123456`, a build with changes `+dirty`, and `go run` or `go test` `(devel)`. One source,
+says `switchboard v1.0.0 (commit 5f795b6f7b36, go1.27.1 darwin/arm64)`, a build after it a pseudo-version such as
+`v1.0.1-0.20261023...-abcdef123456`, a build with changes `+dirty`, and `go run` or `go test` `(devel)`. Installed with
+`go install 'github.com/vivekdavara/switchboard/cmd/...@v1.0.0'`, it says `v1.0.0 (commit unknown, ...)`: a module
+download has no git metadata to stamp a commit from (checked after the release). One source,
 so the binary can't claim a version its commit doesn't have; the release check holds the binary to the tag.
 
 **The release check** (`scripts/release_check.sh`, `make release-check`) runs, stopping at the first failure:
