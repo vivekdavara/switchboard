@@ -619,7 +619,7 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (272 test and fuzz functions, 235 of them
+`make check` runs gofmt, `go vet` and `go test -race` over every package (278 test and fuzz functions, 235 of them
 before day 4; about 25 s, with the test Redis on 6382 started if none answers; coverage 96.9% across packages with
 `go test -coverpkg=./...`, and on their own: gateway 98.3%, config 99.3%, load 97.5%, breaker 97.1%, usage 95.7%,
 ratelimit 92.3%, loadgen 90.7%, cache 87.5% (its misses are errors `json.Compact` and `json.Marshal` can't return there). CI runs the same on Ubuntu 24.04 with
@@ -747,6 +747,9 @@ does the same check before the first attempt, which is equivalent in practice.
 - Recovery waits for the breaker's next probe: up to a cooldown after a provider is back.
 - The metrics are per process: Prometheus adds up replicas; a breaker's state is each replica's own.
 - The load and chaos runs share one laptop with what they measure.
+- loadgen's `-timeout` runs from a request's send, not its due time, so in an open loop a request that waited for a
+  worker can be recorded slower than the timeout.
+- A request whose cache lookup and write both fail logs only the write's error (the metric counts the step once).
 - The retry budget and the breakers live in one gateway process: replicas don't share them (rate limits, the cache
   and the totals do, through Redis).
 - Rate limits count requests, not tokens: a client's huge prompts spend tokens no request limit sees.
