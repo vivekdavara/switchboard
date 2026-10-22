@@ -23,9 +23,9 @@ the questions an interviewer is likely to ask).
 - **Day 4, observing and measuring:** Prometheus metrics on a port of their own (the log line's facts, the cost
   exact), a load generator whose open loop doesn't hide stalls, a load test against the mocks, and chaos runs (a
   provider killed, a provider hung, Redis hung and shut down) under steady load.
-- **Day 5, the release:** a release check, tests that hold the docs to the code, a whole-repo review and its fixes
-  (a request id missing from refusals, `make check` not running all of CI, untested load-table fields, exit codes),
-  every measurement run again at the release, and v1.0.0.
+- **Day 5, the release:** a release check, tests that hold the docs to the code, three reviews and their fixes (a
+  request id missing from refusals, `make check` not running all of CI, untested load-table fields, exit codes, and a
+  release check that passed failing steps), every measurement run again at the release, and v1.0.0.
 
 ## Results at a glance
 
@@ -321,7 +321,9 @@ Every measurement of day 4, and the benchmarks of days 1, 3 and 4, run again at 
 v1.0.0`, from 16:10 to 16:16 on 2026-10-22: Apple M3 (8 cores), macOS 26.6.2, Go 1.27.1, Redis 8.8.0 on loopback, **on
 battery** (93% to 90%, Low Power Mode off), load average 3.1 to 3.6 at the start and end, other applications open, no
 build, test or agent running. loadgen, the gateway and the mocks share the laptop, and the requests are synthetic. The
-raw outputs and the conditions are in [`results/v1.0.0/`](results/v1.0.0/).
+raw outputs and the conditions are in [`results/v1.0.0/`](results/v1.0.0/). Between `45936e1` and the release only
+scripts, a test file and docs changed (`git diff --name-only 45936e1 v1.0.0 -- cmd internal` lists only
+`internal/gateway/docs_test.go`), so these are the release's numbers.
 
 ```bash
 scripts/results.sh v1.0.0   # load.sh (3 runs a case), chaos.sh, the benchmarks; about 6 minutes
@@ -748,45 +750,48 @@ second job.
 
 ## Release check
 
-`make release-check` (`scripts/release_check.sh`) is what a release has to pass, here, on top of CI: `make check`; the
-binary's `switchboard version` against HEAD's release tag (go stamps the tag into a build at it); gofmt, vet and the
-tests again on a `git archive` of HEAD (nothing uncommitted can help); the demo; `go test -race` again with
-`GOMAXPROCS=2`; 15 s of each of the five fuzz tests; and the coverage. Each step's
-output goes to `run/release/<time>/`, with the machine's conditions at the start and end; `quick` stops after the
-demo. It measures nothing.
+`make release-check` (`scripts/release_check.sh`) is what a release has to pass, here, on top of CI: `make check` (with
+the cross builds and every benchmark once, as CI's test job); the binary's `switchboard version` against HEAD's
+release tags (go stamps the tag into a build at it; at a tag, any change in the tree fails the step); gofmt, vet and
+the tests again on a `git archive` of HEAD (nothing uncommitted can help); the demo; `go test -race` again with
+`GOMAXPROCS=2`; 15 s of each of the five fuzz tests (a name that matches no test fails); and the coverage. Each step
+runs with `set -e` and stops the check at its first failing command; its output goes to `run/release/<time>/`, with
+the machine's conditions at the start and end. `quick` stops after the demo. It measures nothing
+(`scripts/results.sh` does).
 
 ```bash
 make release-check
 ```
 
 ```
+release check of 06a8ecfb35ec (06a8ecf), Thu Oct 22 16:30:32 EDT 2026
 == check: make check
-   ok in 24 s
+   ok in 30 s
 == version: versions
-   ok in 1 s
+   ok in 2 s
 == clean-export: clean_export
-   ok in 26 s
+   ok in 28 s
 == demo: scripts/demo.sh
-   ok in 5 s
-== cross: make cross
-   ok in 4 s
-== bench-smoke: bench_smoke
-   ok in 4 s
+   ok in 6 s
 == race-2-cores: env GOMAXPROCS=2 go test -race -count=1 -timeout 5m ./...
-   ok in 32 s
+   ok in 31 s
 == fuzz: fuzz
-   ok in 90 s
+   ok in 87 s
 == coverage: coverage
-   ok in 23 s
-coverage: total:										(statements)		96.9%
-all steps passed; the outputs are in run/release/20261022-153014
+   ok in 22 s
+coverage: total: (statements) 96.9%
+all steps passed; the outputs are in run/release/20261022-163032
 ```
 
-That is its second full run (15:30, at `c605269`); the first, at 15:23, failed `make check` on a data race in
-`loadgen` that 200 runs of the test it came from couldn't show again: the first byte's time, written by the HTTP
-transport's own goroutine, which can still run after a request whose deadline fired has returned. A test aimed at that
-moment (4,000 requests timing out as their answers begin) showed it in 5 of 5 runs; it is an atomic now (`7b73f72`;
-DESIGN "The release (day 5)").
+That is the run at `06a8ecf` (16:30 to 16:34, 3 min 26 s), the commit before the release commit, which changes only
+docs: every step passed. At the `v1.0.0` tag, `quick` checks the binary's version against the tag with a clean tree.
+
+Its history on the day: the first full run (15:23) failed `make check` on a data race in `loadgen` that 200 runs of the
+test it came from couldn't show again: the first byte's time, written by the HTTP transport's own goroutine, which can
+still run after a request whose deadline fired has returned. A test aimed at that moment (4,000 requests timing out as
+their answers begin) showed it in 5 of 5 runs; it is an atomic now (`7b73f72`; DESIGN "The release (day 5)"). The
+second (15:30) passed every step, and the second review then showed that it would have passed some failing ones too:
+each step reported only its last command's status (`7ebbf04`).
 
 ## Reviews and mutation checks
 
