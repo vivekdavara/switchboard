@@ -718,3 +718,47 @@ holds the table to the registry both ways (every metric a row with its labels in
 README's configuration example to `configs/local.json`, the README's error example to the gateway's real answer, and
 every test name the docs cite to a declared function. Each was checked by breaking the docs in a copy. The last one
 mattered at once: a name cut short by a letter passed my first version, which accepted prefixes.
+
+**What did the release review find?**
+One agent read the whole repo at the end of day 4, looking for what each day's own reviews couldn't see: features
+interacting, and the docs against the code. The cross-feature paths held (a request through an alias that is a cache
+hit on a stream with a rate limit, fallback and a stop; usage counted once; metrics equal to the log line). It found
+one real bug: a chat completion refused for its key or Host was answered in `ServeHTTP` before `chat` made the request
+id, so the 401 or 403 had no `X-Request-Id` and its log line no `id`. And a process gap: the README said `make check`
+runs what CI runs, but CI also cross-compiled and ran every benchmark once, so a Windows-only break could pass my
+pre-commit check and fail CI.
+
+**Why does a request id on a 401 matter?**
+A 401 is exactly when a user writes in ("my key stopped working"), and the id is what they can quote and what I can
+grep for. The fix makes the id in `ServeHTTP` for the chat path, before the Host and key checks, sets the header, and
+passes it in the context; the refusal lines carry it and `chat` reuses it, so one request has one id everywhere.
+
+**Which of its findings mattered most?**
+A test gap rather than a bug: nothing read `loadgen`'s `-json` output, and that is what `load.sh` saves and
+`load_table.py` turns into the README's load table. It swapped p99.9 for p99 in the JSON, then the max for p99.9, then
+the throughput for requests over elapsed (which would count connection errors as throughput), and every test passed.
+The numbers were right, but nothing would have kept them right. Now one test checks every field of the JSON against a
+summary whose values all differ, and another runs `load_table.py` on such a line and checks the row it prints.
+
+**And the rest?**
+A rate-limit expiry rounded down would break only clients above 60,000 requests a minute (Redis refuses `PX 0`), so
+it's tested at the configuration's maximum now. Ten docs mismatches, the most interesting being one that said an empty
+client list is refused because "every request would be refused": the opposite of the code, where no clients means no
+key is asked for, which is the real reason to refuse the list. A demo check that inferred the SDK's 429 from a
+one-second wait (it now sees `[200, 429, 200]` through the SDK's HTTP client). And exit codes: `-h` exited 2, a bad
+`-day` exited 1 or 2 depending on the file, and `loadgen` exited 0 when nothing was listening. I settled those before
+the tag, because v1.0.0 promises its exit codes.
+
+**How would you run it in production?**
+Several replicas behind a load balancer, all naming one Redis, so rate limits, the cache and the totals are shared
+(the retry budget and the breakers stay per replica). TLS at the load balancer, since the gateway speaks plain HTTP.
+Provider keys from the platform's secret store into the environment variables the file names. `drain_delay` a little
+longer than the balancer's health-check interval, so a deploy drops nothing. Prometheus scraping each replica's
+metrics port on the internal network. What it lacks for that: config reload (a new client needs a restart) and key
+revocation without one.
+
+**What would you build next?**
+In order of what the measurements say: a breaker that counts attempts still running past a threshold, since a hung
+provider costs its whole timeout to every request until five have timed out (about 400 requests at 200 a second with
+a 2 s timeout); a single flight per cache key, since identical requests at once all miss; token-based rate limits
+charged from the usage, since a request limit doesn't see prompt size; and config reload, which revocation needs.
