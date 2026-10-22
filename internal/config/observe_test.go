@@ -39,6 +39,10 @@ func TestDay4MistakesAreRefusedAndNamed(t *testing.T) {
 	for _, tc := range []struct{ name, top, want string }{
 		{"metrics not an object", `"metrics":"127.0.0.1:9108"`, "metrics: must be an object"},
 		{"metrics with no address", `"metrics":{}`, "metrics: listen must be a host:port"},
+		{"a metrics port past 65535", `"metrics":{"listen":"127.0.0.1:99999"}`, "a port from 0 to 65535"},
+		{"a metrics port that is no service", `"metrics":{"listen":"127.0.0.1:nosuchservice"}`, "a port from 0 to 65535"},
+		{"an API port past 65535, the metrics' too", `"listen":":99999","metrics":{"listen":":99999"}`,
+			`listen: ":99999" is not a host:port address with a port from 0 to 65535`},
 		{"a metrics address with no port", `"metrics":{"listen":"localhost"}`, "listen must be a host:port"},
 		{"an unknown metrics key", `"metrics":{"listen":"h:1","path":"/m"}`, `unknown key "path"`},
 		{"metrics on the API's address", `"listen":"127.0.0.1:8108","metrics":{"listen":"127.0.0.1:8108"}`,

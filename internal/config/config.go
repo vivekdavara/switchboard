@@ -216,8 +216,10 @@ func Parse(b []byte, getenv func(string) string) (*Config, error) {
 			return nil, fmt.Errorf("circuit_breaker: %w", err)
 		}
 	}
-	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
-		return nil, fmt.Errorf("listen: %q is not a host:port address", c.Listen)
+	// A port net.Listen can't open (99999, an unknown service name) is refused here, not first at serve: `check`
+	// passed it (the day-4 third review).
+	if portNumber(c.Listen) < 0 {
+		return nil, fmt.Errorf("listen: %q is not a host:port address with a port from 0 to 65535", c.Listen)
 	}
 	for _, size := range []struct {
 		name  string

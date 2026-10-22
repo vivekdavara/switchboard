@@ -47,7 +47,8 @@ func (c *Config) parseDay4(metrics, logging json.RawMessage) error {
 	return nil
 }
 
-// portNumber is the port a host:port address listens on, as net.Listen reads it; -1 if it has none.
+// portNumber is the port a host:port address listens on, as net.Listen reads it; -1 if it has none or it isn't a port
+// (out of range, or an unknown service name).
 func portNumber(addr string) int {
 	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -69,8 +70,8 @@ func parseMetrics(raw json.RawMessage) (*Metrics, error) {
 	if err := decodeExact("metrics", members, fields{"listen": &m.Listen}); err != nil {
 		return nil, err
 	}
-	if _, _, err := net.SplitHostPort(m.Listen); err != nil {
-		return nil, errors.New("listen must be a host:port address, such as 127.0.0.1:9108")
+	if portNumber(m.Listen) < 0 {
+		return nil, errors.New("listen must be a host:port address with a port from 0 to 65535, such as 127.0.0.1:9108")
 	}
 	return m, nil
 }
