@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -172,8 +173,13 @@ func send(ctx context.Context, client *http.Client, o Options, body []byte, due,
 		ctx, cancel = context.WithTimeout(ctx, o.Timeout)
 		defer cancel()
 	}
-	var first time.Time
-	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotFirstResponseByte: func() { first = time.Now() }})
+	// The transport calls GotFirstResponseByte from its own read loop, which can still run after Do has returned
+	// for a request whose deadline fired as its answer began: hence the atomic (the release check's race).
+	var first atomic.Pointer[time.Time]
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{GotFirstResponseByte: func() {
+		now := time.Now()
+		first.Store(&now)
+	}})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.URL, bytes.NewReader(body))
 	if err != nil {
 		s.Err = err.Error()
@@ -191,8 +197,8 @@ func send(ctx context.Context, client *http.Client, o Options, body []byte, due,
 	}
 	end := time.Now()
 	s.Latency = end.Sub(due)
-	if !first.IsZero() {
-		s.FirstByte = first.Sub(due)
+	if f := first.Load(); f != nil {
+		s.FirstByte = f.Sub(due)
 	}
 	if err != nil {
 		s.Err = errorKind(err)
