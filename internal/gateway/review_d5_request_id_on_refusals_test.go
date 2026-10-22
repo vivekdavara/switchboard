@@ -39,3 +39,18 @@ func TestReviewD5AChatCompletionRefusedForItsKeyOrHostCarriesARequestID(t *testi
 		}
 	}
 }
+
+// And it is that answer's id, so a client quoting it finds its line (any id at all passed the test above: a surviving
+// mutant of the day-5 second review).
+func TestARefusalsLoggedIDIsTheOneItsAnswerCarries(t *testing.T) {
+	up := newProvider(t, mockProvider(t, "mock-a"))
+	srv, _, logs := gatewayFor(t, clients("alice"), []string{at(up, "")}, "fast=p0/mock-small")
+	keyless, _ := send(t, srv, ask)
+	foreign, _ := sendAs(t, srv, "attacker.example", "/v1/chat/completions")
+	for msg, resp := range map[string]*http.Response{"client key refused": keyless, "host not allowed": foreign} {
+		lines := logLines(t, logs, msg)
+		if len(lines) != 1 || lines[0]["id"] != resp.Header.Get("X-Request-Id") || resp.Header.Get("X-Request-Id") == "" {
+			t.Errorf("%s: the answer's id %q, the lines %v", msg, resp.Header.Get("X-Request-Id"), lines)
+		}
+	}
+}

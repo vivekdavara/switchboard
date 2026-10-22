@@ -131,8 +131,8 @@ func TestTheReadmesErrorExampleIsWhatTheGatewayAnswers(t *testing.T) {
 	}
 }
 
-// The docs send a reader to tests and benchmarks by name (WALKTHROUGH's reading orders above all); a rename would
-// leave them pointing at nothing. A name in a -fuzz, -bench or -run pattern may be a prefix of the function's.
+// The docs send a reader to tests and benchmarks by name (WALKTHROUGH's reading orders above all), and the scripts
+// run some by name; a rename would leave them pointing at nothing. A name in a -fuzz, -bench or -run pattern may be a prefix of the function's.
 func TestEveryTestTheDocsNameExists(t *testing.T) {
 	declared := regexp.MustCompile(`(?m)^func ((?:Test|Fuzz|Benchmark)[A-Za-z0-9_]+)\(`)
 	var funcs []string
@@ -155,7 +155,10 @@ func TestEveryTestTheDocsNameExists(t *testing.T) {
 		t.Fatalf("only %d test functions found", len(funcs))
 	}
 	named := regexp.MustCompile(`(-(?:fuzz|bench|run) '?\^?)?\b((?:Test|Fuzz|Benchmark)[A-Z][A-Za-z0-9_]+)`)
-	for _, doc := range []string{"README.md", "DESIGN.md", "WALKTHROUGH.md", "CHANGELOG.md"} {
+	// The Makefile and the release check name fuzz targets too, and go test -fuzz with a name that matches nothing
+	// passes with a warning (the day-5 second review).
+	for _, doc := range []string{"README.md", "DESIGN.md", "WALKTHROUGH.md", "CHANGELOG.md", "Makefile",
+		"scripts/release_check.sh", "scripts/results.sh", ".github/workflows/ci.yml"} {
 		for _, m := range named.FindAllStringSubmatch(readDoc(t, doc), -1) {
 			pattern, name := m[1] != "", m[2]
 			if !slices.ContainsFunc(funcs, func(f string) bool { return f == name || pattern && strings.HasPrefix(f, name) }) {
