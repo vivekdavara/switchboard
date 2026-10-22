@@ -89,6 +89,12 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		fmt.Fprintln(stderr, usageLine)
 		return 2
 	}
+	// Help asked for, before or after a command: the usage, and 0 (the day-5 second review found the first fix covered
+	// only the commands with flags).
+	if isHelp(args[0]) || len(args) == 2 && (args[0] == "version" || args[0] == "keygen") && isHelp(args[1]) {
+		fmt.Fprintln(stderr, usageLine)
+		return 0
+	}
 	switch args[0] {
 	case "version", "keygen":
 		if len(args) != 1 {
@@ -314,6 +320,16 @@ func newServer(h http.Handler, base context.Context, log *slog.Logger) *http.Ser
 		BaseContext:       func(net.Listener) context.Context { return base },
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
+}
+
+// isHelp says whether a word asks for help, as the flag package reads -h and -help (with one dash or two), or as
+// `switchboard help`.
+func isHelp(arg string) bool {
+	switch arg {
+	case "-h", "--h", "-help", "--help", "help":
+		return true
+	}
+	return false
 }
 
 // helpOrUsage is the exit status for a command line the flag package refused: 0 if it was -h or -help (the usage was
