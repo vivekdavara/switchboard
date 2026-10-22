@@ -10,7 +10,15 @@ import os
 import sys
 import time
 
-from openai import APIError, AuthenticationError, BadRequestError, NotFoundError, OpenAI, RateLimitError
+from openai import (
+    APIError,
+    AuthenticationError,
+    BadRequestError,
+    DefaultHttpxClient,
+    NotFoundError,
+    OpenAI,
+    RateLimitError,
+)
 
 base_url = os.environ.get("SWITCHBOARD_URL", "http://127.0.0.1:8108/v1")
 client = OpenAI(base_url=base_url, api_key="placeholder-not-a-key", max_retries=0, timeout=10)
@@ -26,15 +34,19 @@ def check(name, ok, detail):
 
 if sys.argv[1:] == ["day3"]:
     # The day-3 gateway (run/day3.json): carol has a burst of 1 and 60 requests a minute.
-    carol = OpenAI(base_url=base_url, api_key=os.environ["SB_KEY_CAROL"], max_retries=2, timeout=10)
+    # Every status the SDK's HTTP client gets, retries included: the 429 is seen, not inferred from the wait (a
+    # suspicion of the day-5 review: a gateway slow by a second for another reason would have passed).
+    statuses = []
+    http = DefaultHttpxClient(event_hooks={"response": [lambda resp: statuses.append(resp.status_code)]})
+    carol = OpenAI(base_url=base_url, api_key=os.environ["SB_KEY_CAROL"], max_retries=2, timeout=10, http_client=http)
     carol.chat.completions.create(model="plain", messages=hello, max_tokens=3)  # her one request at once
     began = time.monotonic()
     r = carol.chat.completions.create(model="plain", messages=hello, max_tokens=4)
     waited = time.monotonic() - began
     check(
         "a 429 the SDK waits out",
-        0.5 < waited < 3 and r.usage.completion_tokens == 4,
-        f"answered {waited:.2f} s later: the SDK read Retry-After and retried",
+        0.5 < waited < 3 and r.usage.completion_tokens == 4 and statuses == [200, 429, 200],
+        f"answered {waited:.2f} s later, statuses {statuses}: the SDK read Retry-After and retried",
     )
     try:
         OpenAI(base_url=base_url, api_key=os.environ["SB_KEY_CAROL"], max_retries=0).chat.completions.create(

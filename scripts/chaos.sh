@@ -42,6 +42,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# forget PID: a process this script has already ended, so that cleanup doesn't signal its pid, which the system may
+# have given to another process by then (a suspicion of the day-5 review).
+forget() {
+  local keep=() pid
+  for pid in "${pids[@]}"; do [[ $pid == "$1" ]] || keep+=("$pid"); done
+  pids=(${keep[@]+"${keep[@]}"})
+}
+
 wait_for() {
   for _ in $(seq 100); do curl -sf "$1" >/dev/null 2>&1 && return; sleep 0.05; done
   echo "$1 never answered" >&2
@@ -118,6 +126,7 @@ phase() {
 killed() {
   sleep 11
   kill "$mock_b"; wait "$mock_b" 2>/dev/null || true
+  forget "$mock_b"
   echo "$(date +%T) mock-b killed" >>"$out/events.txt"
   sleep 15
   mock mock-b 8119
@@ -142,6 +151,7 @@ redis_down() {
   sleep 5
   redis-cli -p 6382 shutdown nosave >/dev/null 2>&1 || true
   wait "$redis_pid" 2>/dev/null || true
+  forget "$redis_pid"
   echo "$(date +%T) redis shut down" >>"$out/events.txt"
   sleep 7
   redis
