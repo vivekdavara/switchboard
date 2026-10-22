@@ -747,12 +747,10 @@ so the binary can't claim a version its commit doesn't have; the release check h
 
 | Step | What it catches |
 |---|---|
-| `make check` | what CI runs: gofmt, vet, `go test -race` with the test Redis |
+| `make check` | what CI's test job runs: gofmt, vet, the cross builds (Windows, Linux arm64, macOS), `go test -race` with the test Redis, every benchmark once (`make bench-smoke`; not a measurement) |
 | `version` | a binary built at a release tag that doesn't say that tag |
 | `clean-export` | a file the tests need that was never committed, or one gofmt would change: gofmt, vet and the tests on a `git archive` of HEAD |
 | `demo` | the real binaries on their real ports: curl, the OpenAI SDK if `.venv` has it, the metrics against the requests |
-| `cross` | Windows, Linux arm64 and macOS builds (a Unix-only call broke Windows once) |
-| `bench-smoke` | a benchmark that no longer runs (50 iterations each, as in CI; not a measurement) |
 | `race-2-cores` | interleavings eight cores hide: the tests again under `-race` with `GOMAXPROCS=2` |
 | `fuzz` | 15 s of each of the five fuzz tests |
 | `coverage` | prints the total over every package (`-coverpkg=./...`) |

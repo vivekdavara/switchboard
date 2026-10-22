@@ -45,7 +45,7 @@ jobs:
         run: go test -race -count=1 -timeout 3m ./...
       - name: Benchmarks run
         # Not a measurement (a shared runner is noisy): only that every benchmark still runs. README has the numbers.
-        run: go test -run '^$' -bench . -benchtime 50x ./internal/gateway ./internal/openai ./internal/route ./internal/budget ./internal/breaker ./internal/ratelimit
+        run: make bench-smoke
 
   smoke:
     # The real binaries on their real ports: scripts/demo.sh starts two mock providers and the gateway, checks the

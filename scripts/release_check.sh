@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# The release check (README, "Release check"): what CI runs, the same tests again on a clean export of the commit (so
-# they need nothing that isn't committed), the built binary's version against the commit's release tag, the demo of
-# the real binaries, and every benchmark run once; the full check adds the race detector on two cores, a short run of
-# every fuzz test and the coverage. Each step's output goes to run/release/<time>/<step>.txt; the check stops at the
+# The release check (README, "Release check"): what CI runs (make check: gofmt, vet, the cross builds, the tests and
+# every benchmark once), the same tests again on a clean export of the commit (so they need nothing that isn't
+# committed), the built binary's version against the commit's release tag, and the demo of the real binaries; the full
+# check adds the race detector on two cores, a short run of every fuzz test and the coverage. Each step's output goes to run/release/<time>/<step>.txt; the check stops at the
 # first step that fails.
 #
 #   scripts/release_check.sh          all of it (about 3.5 minutes on an M3)
@@ -83,12 +83,6 @@ clean_export() {
   )
 }
 
-# CI's "Benchmarks run" step: every benchmark still runs (50 iterations: not a measurement).
-bench_smoke() {
-  go test -run '^$' -bench . -benchtime 50x ./internal/gateway ./internal/openai ./internal/route ./internal/budget \
-    ./internal/breaker ./internal/ratelimit
-}
-
 # Every fuzz test for 15 s (their seeds already run in make test). go test fuzzes one target at a time.
 fuzz() {
   local pkg target
@@ -129,8 +123,6 @@ if [ "${1:-}" = quick ]; then
   exit 0
 fi
 
-step cross make cross
-step bench-smoke bench_smoke
 step race-2-cores env GOMAXPROCS=2 go test -race -count=1 -timeout 5m ./...
 step fuzz fuzz
 step coverage coverage

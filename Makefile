@@ -1,4 +1,4 @@
-.PHONY: bench build chaos check cross demo fuzz lint load redis redis-stop release-check test
+.PHONY: bench bench-smoke build chaos check cross demo fuzz lint load redis redis-stop release-check test
 
 # The Redis the tests use (day 3): a project-local one on 6382, started by `make test` if none answers there, keeping
 # nothing on disk. Tests that need Redis are skipped when SWITCHBOARD_TEST_REDIS is unset (a plain `go test ./...`),
@@ -6,8 +6,9 @@
 REDIS_PORT ?= 6382
 export SWITCHBOARD_TEST_REDIS ?= 127.0.0.1:$(REDIS_PORT)
 
-# What CI runs.
-check: lint test
+# What CI's test job runs: gofmt and vet, the cross builds, the tests, and every benchmark once (the cross builds and
+# the benchmarks were CI's alone until the day-5 review, so a Windows-only break could pass make check).
+check: lint cross test bench-smoke
 
 # gofmt skips .scratch/, where review worktrees live (go vet's ./... skips dot-directories by itself): a review's
 # half-written file there once failed this check.
@@ -43,6 +44,10 @@ fuzz:
 # The real binaries: two mock providers and the gateway on 8108/8118/8119, eight requests checked (CI's smoke job).
 demo:
 	scripts/demo.sh
+
+# Every benchmark still runs: 50 iterations each, not a measurement (CI's "Benchmarks run" step).
+bench-smoke:
+	go test -run '^$$' -bench . -benchtime 50x ./internal/gateway ./internal/openai ./internal/route ./internal/budget ./internal/breaker ./internal/ratelimit
 
 # README, "Results": the gateway's overhead (sequential, two request shapes), its connection pool (32 at once), and
 # its own work on a body (parse, check, rewrite).

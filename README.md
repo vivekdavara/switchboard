@@ -200,11 +200,11 @@ redis-server --port 6382 --save "" --appendonly no
 go run ./cmd/switchboard usage -config configs/clients.example.json
 ```
 
-`make check` runs what CI runs (gofmt, vet, `go test -race`, starting the test Redis on 6382 if none answers;
-`make redis-stop` stops it). `go run ./cmd/switchboard check -config FILE` loads a configuration and prints its
+`make check` runs what CI's test job runs (gofmt, vet, the cross builds, `go test -race`, starting the test Redis on
+6382 if none answers, and every benchmark once; `make redis-stop` stops the Redis). `go run ./cmd/switchboard check -config FILE` loads a configuration and prints its
 routes, clients, caches and prices.
 
-## The API (days 1 to 3)
+## The API
 
 | Method and path | What it does |
 |---|---|
@@ -619,8 +619,9 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (284 test and fuzz functions at v1.0.0: 279
-at the end of day 4, 235 before it; about 25 s, with the test Redis on 6382 started if none answers). Coverage is
+`make check` runs gofmt, `go vet`, the cross builds, `go test -race` over every package (284 test and fuzz functions
+at v1.0.0: 279 at the end of day 4, 235 before it) and every benchmark once (about 35 s, with the test Redis on 6382
+started if none answers; before the day-5 review it skipped the cross builds and the benchmarks, which only CI ran). Coverage is
 96.9% across packages (`go test -coverpkg=./...`, the release check's last step), and on their own (`go test -cover
 ./...`, at `8f12172`): budget 100%, config 99.3%, mock 99.1%, gateway 98.3%, load 97.6%, breaker 97.1%, usage 97.1%,
 jsonstrict 96.7%, route 94.7%, openai 92.4%, ratelimit 92.3%, loadgen 90.7%, mockprovider 90.2%, cache 87.5% (its
@@ -652,8 +653,8 @@ second job.
 
 `make release-check` (`scripts/release_check.sh`) is what a release has to pass, here, on top of CI: `make check`; the
 binary's `switchboard version` against HEAD's release tag (go stamps the tag into a build at it); gofmt, vet and the
-tests again on a `git archive` of HEAD (nothing uncommitted can help); the demo; the cross builds; every benchmark run
-once; `go test -race` again with `GOMAXPROCS=2`; 15 s of each of the five fuzz tests; and the coverage. Each step's
+tests again on a `git archive` of HEAD (nothing uncommitted can help); the demo; `go test -race` again with
+`GOMAXPROCS=2`; 15 s of each of the five fuzz tests; and the coverage. Each step's
 output goes to `run/release/<time>/`, with the machine's conditions at the start and end; `quick` stops after the
 demo. It measures nothing.
 
@@ -828,8 +829,13 @@ reviews' surviving mutants, every one fails a test now.
   it out again, rather than estimating tokens it has no tokenizer for.
 - **Money in integer picodollars.** Exact sums, and bounds that make overflow impossible.
 
-## Limitations (day 4)
+## Limitations
 
+- Plain HTTP only: neither the API nor the metrics listener speaks TLS, so off loopback a proxy in front has to
+  terminate it, or client keys cross the network in the clear. (Providers are reached over https, HTTP/2 included.)
+- No configuration reload: a new client, price or model needs a restart (with `drain_delay`, one without dropped
+  requests behind a load balancer).
+- Tested on macOS (here) and Linux (CI); Windows is only cross-compiled, never run.
 - A hung provider costs its timeout to every request sent to it before its breaker hears of five timeouts (with a
   2 s timeout at 200 a second, about 400 requests; README "Results (day 4)"); a breaker that counts slow attempts
   before they end would cut that.
