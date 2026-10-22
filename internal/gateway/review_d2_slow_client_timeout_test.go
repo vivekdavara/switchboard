@@ -42,7 +42,7 @@ func TestReviewD2ASlowClientIsNotTheProvidersTimeout(t *testing.T) {
 		}
 	}))
 	_, g, logs := gatewayFor(t, `"max_response_bytes":67108864,"circuit_breaker":{"failures":1,"cooldown":"30s"}`,
-		[]string{at(up, `"timeout":"300ms"`)}, "m=p0/x")
+		[]string{at(up, `"timeout":"600ms"`)}, "m=p0/x")
 	srv := httptest.NewUnstartedServer(g)
 	srv.Listener = smallWriteBuffers{srv.Listener}
 	srv.Start()
@@ -63,7 +63,10 @@ func TestReviewD2ASlowClientIsNotTheProvidersTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	time.Sleep(time.Second) // the client is busy for a moment: longer than the provider's timeout
+	// The client is busy for a moment: longer than the provider's timeout. (300 ms and 1 s until day 5: once in about
+	// 40 CI runs, one read from this in-process provider under -race took longer than 300 ms on its own, a stall of
+	// the runner's and not the bug, which the timer would then rightly have called a timeout.)
+	time.Sleep(2 * time.Second)
 	b, err := io.ReadAll(resp.Body)
 	if err != nil || !strings.HasSuffix(string(b), "data: [DONE]\n\n") {
 		tail := string(b[max(0, len(b)-300):])
