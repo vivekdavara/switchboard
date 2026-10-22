@@ -766,6 +766,15 @@ errors. It also showed that `go test -fuzz` with a name that matches nothing pas
 target would quietly stop being fuzzed; the release check fails on that now, and the docs test reads the scripts'
 names too.
 
+**And a third review?**
+Of the second round's fixes only, 9 minutes. No Go bug, and two in my scripts, both in those fixes. My `set -e` fix ran
+each step as a background job, and a non-interactive bash starts background jobs with SIGINT ignored, so Ctrl-C did
+nothing: the demo's servers and the fuzzing ran on, and the check could still end "all steps passed". The standard
+idiom fixes both problems: `set +e; ( set -e; "$@" ); status=$?; set -e`, a foreground subshell that isn't a
+condition. And `results.sh` passed a caller's `PHASES` on to `chaos.sh`, which could have filed an older run's chaos
+outputs as this run's. Three rounds, and each found something in the last one's fixes, which is why I keep running
+them.
+
 **What's the lesson from the release check's bug?**
 That a check needs its own failing case. I had run it and watched it pass; I never made a step fail in the middle.
 The reviewer did, with `go` stubbed to fail one fuzz target. I checked the fix the same way, at top level as the

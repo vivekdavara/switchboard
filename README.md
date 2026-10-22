@@ -44,7 +44,7 @@ it, synthetic requests.
 | Redis hung, then shut down | 8,000 of 8,000, p99 255 ms | 8,000 of 8,000 |
 | Metrics and log line per request | 2.11 µs | 2.09 µs |
 | Completions counted under load, and their cost | 112,500 of 112,500, exactly $2.244375 | the same |
-| Tests | 297 test and fuzz functions, coverage 96.9% | 279, 96.9% |
+| Tests | 298 test and fuzz functions, coverage 96.9% | 279, 96.9% |
 
 ## Architecture
 
@@ -716,7 +716,7 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet`, the cross builds, `go test -race` over every package (297 test and fuzz functions
+`make check` runs gofmt, `go vet`, the cross builds, `go test -race` over every package (298 test and fuzz functions
 at v1.0.0: 279 at the end of day 4, 235 before it) and every benchmark once (about 35 s, with the test Redis on 6382
 started if none answers; before the day-5 review it skipped the cross builds and the benchmarks, which only CI ran). Coverage is
 96.9% across packages (`go test -coverpkg=./...`, the release check's last step), and on their own (`go test -cover
@@ -902,6 +902,15 @@ tag failed its version step with a misleading message; the `-h` fix missed `swit
 in a refusal's line passed; the guard for a run with no samples) fail tests now, and `go test -fuzz` passing with a
 warning for a name that matches nothing led to the release check failing on that and the docs test reading the
 scripts' names.
+
+A third review (one agent, 9 minutes, at `45936e1`, of the second round's fixes) found no Go bug and two in the
+scripts, both in that round's fixes: my background-job `step` had made Ctrl-C do nothing (a non-interactive bash
+starts a background job with SIGINT ignored), so a step is a foreground subshell with `set -e` inside and off around
+it now; and `results.sh` passed a caller's `PHASES` on to `chaos.sh`, which rewrites only the phases it runs, so it
+could have filed an older run's chaos outputs as this run's. Its surviving mutant, a `-bench` pattern that matches
+nothing (which `go test` passes silently), led to a docs test of every `-bench` command against the benchmarks of the
+packages it names. Its judgement calls taken: an argument other than `quick` is refused; `results.sh` warns about
+untracked files.
 
 Before the reviews, the release check's first full run had found a data race in `loadgen` ("Release check"). A test
 kept from day 4's review (`TestReviewD4EveryWorkerKeepsTheConnectionTheWarmupOpened`) failed CI twice on the day,

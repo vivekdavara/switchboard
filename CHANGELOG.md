@@ -62,6 +62,9 @@ The first release: an OpenAI-compatible gateway for `/v1/chat/completions`, buil
   fails at a tag whose tree has any change, compares the binary with every release tag on HEAD, and fails on a fuzz
   name that matches no test; `switchboard -h`, `help`, `version -h` and `keygen -h` exit 0 too; `loadgen` counts a
   200 that broke off as an answer.
+- From the third review: a release-check step runs in the foreground again, so Ctrl-C stops it; `results.sh` runs
+  every chaos phase whatever the caller's environment and copies only this run's outputs; the release check refuses
+  an argument other than `quick`; every `-bench` pattern the scripts run matches a benchmark.
 
 **What a 1.x release keeps.** The API's paths, status codes and error codes; the response headers
 (`X-Request-Id`, `X-Switchboard-Attempts`, `X-Switchboard-Provider`, `X-Switchboard-Cache`, the `x-ratelimit-*`
