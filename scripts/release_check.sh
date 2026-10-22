@@ -20,19 +20,23 @@ mkdir -p "$dir"
 export SWITCHBOARD_TEST_REDIS="${SWITCHBOARD_TEST_REDIS:-127.0.0.1:6382}"
 
 # step NAME COMMAND...: runs the command (often a function below) with its output in NAME.txt, and stops the check if
-# any command in it fails. It runs in the background and is waited for, not tested in an if: bash ignores set -e
-# inside an if's condition, functions and subshells included, so a step reported only its last command's status (a
-# failing fuzz target but the last, a vet failure followed by passing tests: found by the day-5 second review).
+# any command in it fails. The command runs in a subshell with set -e, in the foreground and not as a condition: bash
+# ignores set -e inside an if's or a ||'s condition, functions and subshells included, so a step tested with `if !`
+# reported only its last command's status (a failing fuzz target but the last, a vet failure followed by passing
+# tests: the day-5 second review); and a background job, my first fix, starts with SIGINT ignored, so Ctrl-C no longer
+# stopped a step (the day-5 third review). So set -e is off around the subshell, and on inside it.
 step() {
   local name="$1"
   shift
-  local start=$SECONDS status=0
+  local start=$SECONDS status
   echo "== $name: $*"
+  set +e
   (
     set -e
     "$@"
-  ) >"$dir/$name.txt" 2>&1 &
-  wait $! || status=$?
+  ) >"$dir/$name.txt" 2>&1
+  status=$?
+  set -e
   if [ "$status" -ne 0 ]; then
     echo "   FAILED (exit $status) after $((SECONDS - start)) s; see $dir/$name.txt"
     exit 1

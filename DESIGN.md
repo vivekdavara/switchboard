@@ -757,9 +757,10 @@ so the binary can't claim a version its commit doesn't have; the release check h
 | `fuzz` | 15 s of each of the five fuzz tests |
 | `coverage` | prints the total over every package (`-coverpkg=./...`) |
 
-Each step runs in the background with `set -e` and is waited for, so its first failing command fails it (as an
-`if` condition, bash ignored `set -e` inside it, and a step reported only its last command's status until the day-5
-second review); a fuzz name that matches no test fails too, since `go test -fuzz` only warns. `quick` stops after
+Each step runs in a subshell with `set -e`, in the foreground with `set -e` off around it, so its first failing
+command fails it (as an `if` condition, bash ignored `set -e` inside it, and a step reported only its last command's
+status until the day-5 second review; as a background job, my first fix, it started with SIGINT ignored, so Ctrl-C
+didn't stop it: the third review); a fuzz name that matches no test fails too, since `go test -fuzz` only warns. `quick` stops after
 the demo (about a minute; the whole check takes three and a half). It measures nothing: the README's numbers come
 from `scripts/results.sh` (which runs `scripts/load.sh`, `scripts/chaos.sh` and the benchmarks and keeps their outputs
 in `results/`) and `make bench`, which need a quiet machine. Its first full run failed `make check` on a data race in
