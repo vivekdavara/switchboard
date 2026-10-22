@@ -37,20 +37,28 @@ conditions() {
 }
 
 echo "results of $(git rev-parse --short=12 HEAD) into $dir, $(date)"
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-  echo "warning: tracked files have changes; the numbers are the working tree's, not the commit's"
+if [ -n "$(git status --porcelain)" ]; then # untracked files too: a stray .go file is compiled into the benchmarks
+  echo "warning: the tree has changes; the numbers are the working tree's, not the commit's"
 fi
 conditions >"$dir/conditions-start.txt" 2>&1
 
 make redis >/dev/null
 echo "== load (RUNS=3 scripts/load.sh)"
+rm -f run/load/results.jsonl run/load/redis-usage.txt # so a copy below can only be this run's
 RUNS=3 scripts/load.sh >"$dir/load.txt" 2>&1
 cp run/load/results.jsonl "$dir/load.jsonl"
 cp run/load/redis-usage.txt "$dir/load-redis-usage.txt"
 python3 scripts/load_table.py "$dir/load.jsonl" | tee "$dir/load-table.md"
 
 echo "== chaos (scripts/chaos.sh)"
-scripts/chaos.sh >"$dir/chaos.txt" 2>&1
+# All three phases at their defaults, whatever the caller's environment says (PHASES or PROVIDER_TIMEOUT exported for
+# a one-phase run would otherwise reach chaos.sh), and no earlier run's outputs left to copy: chaos.sh rewrites only
+# the phases it runs, so one phase run would have filed the other two's old timelines as this run's (both found by
+# the day-5 third review).
+for phase in provider-killed provider-hung redis-hung; do
+  rm -f "run/chaos/$phase.txt" "run/chaos/$phase.delta"
+done
+env -u PHASES -u PROVIDER_TIMEOUT scripts/chaos.sh >"$dir/chaos.txt" 2>&1
 cp run/chaos/events.txt run/chaos/*.delta "$dir/chaos/"
 for phase in provider-killed provider-hung redis-hung; do cp "run/chaos/$phase.txt" "$dir/chaos/$phase-timeline.txt"; done
 cat "$dir/chaos/events.txt"
