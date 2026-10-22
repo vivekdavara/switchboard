@@ -10,7 +10,7 @@ that simulate latency and errors.
 This document is written before the code of each day and corrected after it. Day 1's part is the request path, the
 error mapping, the configuration and the mock providers; day 2's is routing, fallback, the retry budget, circuit
 breakers and streaming; day 3's is client keys, rate limits, caching and accounting, with Redis; day 4's is metrics,
-logs, and the load and chaos runs.
+logs, and the load and chaos runs; day 5's is the release (v1.0.0).
 
 ## Architecture
 
@@ -735,6 +735,56 @@ header's values (`X-Switchboard-Provider`) per step.
 
 README "Results (day 4)" has both, with what they found.
 
+## The release (day 5)
+
+**The version comes from the tag.** There is no version constant: `switchboard version` prints the module version the
+go command stamps into the binary from git (Go 1.24 and later), so a build at the `v1.0.0` tag with nothing changed
+says `switchboard v1.0.0 (commit ..., go1.27.1 darwin/arm64)`, a build after it a pseudo-version such as
+`v1.0.1-0.20261023...-abcdef123456`, a build with changes `+dirty`, and `go run` or `go test` `(devel)`. One source,
+so the binary can't claim a version its commit doesn't have; the release check holds the binary to the tag.
+
+**The release check** (`scripts/release_check.sh`, `make release-check`) runs, stopping at the first failure:
+
+| Step | What it catches |
+|---|---|
+| `make check` | what CI runs: gofmt, vet, `go test -race` with the test Redis |
+| `version` | a binary built at a release tag that doesn't say that tag |
+| `clean-export` | a file the tests need that was never committed, or one gofmt would change: gofmt, vet and the tests on a `git archive` of HEAD |
+| `demo` | the real binaries on their real ports: curl, the OpenAI SDK if `.venv` has it, the metrics against the requests |
+| `cross` | Windows, Linux arm64 and macOS builds (a Unix-only call broke Windows once) |
+| `bench-smoke` | a benchmark that no longer runs (50 iterations each, as in CI; not a measurement) |
+| `race-2-cores` | interleavings eight cores hide: the tests again under `-race` with `GOMAXPROCS=2` |
+| `fuzz` | 15 s of each of the five fuzz tests |
+| `coverage` | prints the total over every package (`-coverpkg=./...`) |
+
+`quick` stops after the demo (about a minute; the whole check about four). It measures nothing: the README's numbers
+come from `make bench`, `scripts/load.sh` and `scripts/chaos.sh`, which need a quiet machine. Its first full run
+failed `make check` on a data race in `loadgen` (below).
+
+**The first byte's time is atomic.** `loadgen` records when each answer's first byte arrived through httptrace's
+`GotFirstResponseByte`, which the transport calls from its own read loop. For a request whose deadline fires just as
+its answer begins, `Do` returns (the context is done) while that loop may still be about to call it, so the write and
+`send`'s read of the time were unsynchronized. `TestAFirstByteAtTheDeadlineIsNoRace` sends 4,000 requests with a 2 ms
+timeout to a server answering in 2 ms, so many land at that moment: `-race` reported it in 5 of 5 runs before the fix
+and none after. The gateway's own trace (`delivered`, whether the provider got the whole request) was already an
+`atomic.Bool` for the same reason.
+
+**The docs are tested where v1.0.0 makes promises.** `internal/gateway/docs_test.go` holds DESIGN's metrics table to
+the registry (every metric a row with exactly its labels, and every row a metric), the README's configuration example
+to `configs/local.json`, and the README's error example to the gateway's answer for an unknown model.
+
+**What 1.x keeps** (CHANGELOG.md): the API's paths, statuses, error codes and headers; the configuration's keys and
+what each means; the metric names and labels; the log line's fields; the Redis keys (`<prefix>ratelimit:<client>`,
+`<prefix>cache:<sha256>`, `<prefix>usage:<day>:<client>:<model>`); the commands, their flags and exit codes. Two
+consequences worth knowing:
+
+- The configuration is read strictly, so a key a 1.x adds is an error to an older 1.x: a file written for v1.2 may not
+  load in v1.0. That is the strict reader's price (a misspelt key is never silently a default), and the reason a 1.x
+  may add keys but never change what one means.
+- A change to what a cache key hashes (`cache.Key`) or to an entry's encoding would make every cached answer a miss
+  or unreadable (an unreadable entry is a miss, so nothing breaks; the cache just starts cold). A change to the
+  bucket's meaning in Redis would reset every client's limit. Either is a release note, not a 2.0.
+
 ## Decisions and alternatives
 
 - **Forward raw members, not structs.** Decoding into structs and encoding again is the easy way and loses every
@@ -787,7 +837,7 @@ README "Results (day 4)" has both, with what they found.
   (`internal/pool/pool.go`: `dialConn`, `tryDial`). With Redis hung, requests paid 100 ms a step for about a second, until
   the kernel's accept queue (128 here) filled and dials began to fail; after that every step failed at once.
 
-## Plan for days 4 and 5
+## The plan, day by day
 
 - **Day 2 (done):** routing (weighted targets, model aliases), fallback on errors and timeouts with a retry budget,
   circuit breakers per provider, streaming passthrough (server-sent events, flushed per event), the mock streaming.
@@ -795,7 +845,7 @@ README "Results (day 4)" has both, with what they found.
   accounting from the providers' `usage`, with daily totals per client.
 - **Day 4 (done):** Prometheus metrics (the log line's facts), the log's level and format, a load test against the
   mocks (latency overhead, throughput), chaos runs (a provider killed, a provider hung, Redis hung and shut down).
-- **Day 5:** README with results, WALKTHROUGH.md, v1.0.0.
+- **Day 5 (done):** the release check, the docs tests, README with results, WALKTHROUGH.md, v1.0.0.
 
 What day 1 leaves for them to respect:
 
