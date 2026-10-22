@@ -619,11 +619,14 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (279 test and fuzz functions, 235 of them
-before day 4; about 25 s, with the test Redis on 6382 started if none answers; coverage 96.9% across packages with
-`go test -coverpkg=./...`, and on their own: gateway 98.3%, config 99.3%, load 97.5%, breaker 97.1%, usage 95.7%,
-ratelimit 92.3%, loadgen 90.7%, cache 87.5% (its misses are errors `json.Compact` and `json.Marshal` can't return there). CI runs the same on Ubuntu 24.04 with
-Redis 8 as a service container, then `make demo`'s script with the SDK checks (and its own Redis) as a second job.
+`make check` runs gofmt, `go vet` and `go test -race` over every package (284 test and fuzz functions at v1.0.0: 279
+at the end of day 4, 235 before it; about 25 s, with the test Redis on 6382 started if none answers). Coverage is
+96.9% across packages (`go test -coverpkg=./...`, the release check's last step), and on their own (`go test -cover
+./...`, at `8f12172`): budget 100%, config 99.3%, mock 99.1%, gateway 98.3%, load 97.6%, breaker 97.1%, usage 97.1%,
+jsonstrict 96.7%, route 94.7%, openai 92.4%, ratelimit 92.3%, loadgen 90.7%, mockprovider 90.2%, cache 87.5% (its
+misses are errors `json.Compact` and `json.Marshal` can't return there), switchboard 85.8%. CI runs the same on Ubuntu
+24.04 with Redis 8 as a service container, then `make demo`'s script with the SDK checks (and its own Redis) as a
+second job.
 
 | Package | What the tests pin down |
 |---|---|
@@ -643,6 +646,49 @@ Redis 8 as a service container, then `make demo`'s script with the SDK checks (a
 | `gateway`, day 4 | the metrics against the log's lines whatever the requests (one request per line by status and code, the attempts, tokens and cost), and exact values for fallback, a breaker opening and its skip, 404, 400, a stream, the budget refusing, rate limits, the cache per client, key and Host refusals, Redis down per step, a client leaving (499, `client_closed`); a cost exact over a million requests; the text format; the metrics handler's Host check and methods; an answer whose Redis steps failed logged at WARN, each step alone; a cache lookup's failure kept when the write works; a stream broken after its usage (uncounted tokens); the in-flight gauge during a request |
 | `load`, `loadgen` (day 4) | an open loop counting a stall's wait in every request it delays and a closed loop not (25 slow requests against 1); the warmup unmeasured, and an open loop's at the rate, its end the timeline's 0 s; a connection kept per worker (200 workers); a run stopped part-way or before its first measured request; p99.9 of 1,000 as the 999th; the rate kept; errors by kind; a timeout; nearest-rank percentiles; the timeline by due time; the key from the environment; bad arguments |
 | `cmd/...` | serving, readiness and a clean stop; the metrics on their own port (none on the API's, none of the API on theirs, a rebinding Host refused, closed after the stop), a busy metrics port, the log's level and format; the drain (`/readyz` 503 while still answering); a request finishing within the grace; one still running after it getting a 503; a second signal ending the real binary at once; the server's timeouts; usage errors and exit codes |
+| docs (day 5) | DESIGN's metrics table against the registry, both ways (names and labels in order); README's configuration example against `configs/local.json` and its error example against the gateway's answer; every test the docs name exists; loadgen's first-byte time with answers arriving as deadlines fire (under `-race`) |
+
+## Release check
+
+`make release-check` (`scripts/release_check.sh`) is what a release has to pass, here, on top of CI: `make check`; the
+binary's `switchboard version` against HEAD's release tag (go stamps the tag into a build at it); gofmt, vet and the
+tests again on a `git archive` of HEAD (nothing uncommitted can help); the demo; the cross builds; every benchmark run
+once; `go test -race` again with `GOMAXPROCS=2`; 15 s of each of the five fuzz tests; and the coverage. Each step's
+output goes to `run/release/<time>/`, with the machine's conditions at the start and end; `quick` stops after the
+demo. It measures nothing.
+
+```bash
+make release-check
+```
+
+```
+== check: make check
+   ok in 24 s
+== version: versions
+   ok in 1 s
+== clean-export: clean_export
+   ok in 26 s
+== demo: scripts/demo.sh
+   ok in 5 s
+== cross: make cross
+   ok in 4 s
+== bench-smoke: bench_smoke
+   ok in 4 s
+== race-2-cores: env GOMAXPROCS=2 go test -race -count=1 -timeout 5m ./...
+   ok in 32 s
+== fuzz: fuzz
+   ok in 90 s
+== coverage: coverage
+   ok in 23 s
+coverage: total:										(statements)		96.9%
+all steps passed; the outputs are in run/release/20261022-153014
+```
+
+That is its second full run (15:30, at `c605269`); the first, at 15:23, failed `make check` on a data race in
+`loadgen` that 200 runs of the test it came from couldn't show again: the first byte's time, written by the HTTP
+transport's own goroutine, which can still run after a request whose deadline fired has returned. A test aimed at that
+moment (4,000 requests timing out as their answers begin) showed it in 5 of 5 runs; it is an atomic now (`7b73f72`;
+DESIGN "The release (day 5)").
 
 ## Reviews and mutation checks
 
