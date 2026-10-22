@@ -675,6 +675,7 @@ the cost).
 | `switchboard_redis_errors_total` | step | `rate_limit`, `cache`, `totals`: once per failing request and step |
 | `switchboard_completions_total` | client, provider, upstream_model | completions counted (as the totals count them) |
 | `switchboard_tokens_total` | client, provider, upstream_model, kind | their tokens, `prompt` and `completion`, as reported |
+| `switchboard_uncounted_tokens_total` | client, provider, upstream_model, kind | tokens a provider reported for an answer that wasn't counted (a stream broken or ended in an error after its usage, a client that left, an attempt that failed before a fallback): it may still bill them |
 | `switchboard_cost_dollars_total` | client, provider, upstream_model | their cost at the configured prices |
 
 Plus Go's runtime and the process's own (`go_*`, `process_*`).
@@ -707,8 +708,10 @@ gateway adds to a request, and under load the runs with and without it overlap (
 
 The chat completion line's fields: `id`, `status`, `model` (as the client sent it), `ms`, `request_bytes`,
 `response_bytes`; and when they apply, `client`, `rate_limit`, `redis_err`, `provider`, `upstream_model`,
-`prompt_tokens`, `completion_tokens`, `cost_usd`, `totals_err`, `usage_asked`, `cache`, `cache_stored`, `cache_err`,
-`upstream_status`, `upstream_ms`, `attempts`, `tried` (each attempt and skip, when there is more than one, or a skip),
+`prompt_tokens`, `completion_tokens` (with `uncounted: true` when that answer wasn't counted), `cost_usd`,
+`totals_err`, `usage_asked`, `cache`, `cache_stored`, `cache_err`, `upstream_status`, `upstream_ms`, `attempts`,
+`tried` (each attempt and skip, when there is more than one, or a skip; an attempt that reported a usage and then
+failed carries its `prompt_tokens` and `completion_tokens`, uncounted),
 `streamed` and `events`, `retry_budget_spent`, `code`, `err`. Never a message's content, a client's key or a
 provider's key.
 

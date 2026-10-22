@@ -650,6 +650,15 @@ metrics listener on the API's port took the API's local traffic; the config now 
 hosts. And a run stopped during the warmup reported a length of minus 292 years. I re-ran every measurement after the
 fixes.
 
+**And the second review?**
+It checked only the fixes, and found bugs in two of them, as on days 1 to 3. The port check compared strings, but
+`net.Listen` reads numbers, so `08108` or `+8108` for the metrics still shadowed the API's `:8108` (and `127.0.0.1:`,
+port 0, was wrongly refused); ports go through `net.LookupPort` now. And the uncounted tokens covered only the last
+attempt: an attempt that reported its usage and then failed lost it when another provider answered, so each attempt's
+entry in the log's `tried` list now carries its usage, and the metric counts it under that attempt's provider. Four
+more mutants survived (the metrics through the grace, an open loop's warmup sent twice or with one body, truncating
+instead of rounding p); each has a test now.
+
 **And the tests it showed were missing?**
 Five mutants survived: the WARN rule's rate-limit and cache conditions (only the totals' was pinned), the in-flight
 gauge (tests only read 0 at the end), the metrics staying up through the drain, loadgen's per-host connection limit,
