@@ -31,15 +31,32 @@ func TestReviewD4EveryWorkerKeepsTheConnectionTheWarmupOpened(t *testing.T) {
 	srv.Start()
 	defer srv.Close()
 	const workers = 200
-	res, err := Run(context.Background(), Options{URL: srv.URL, Body: body, Requests: 2 * workers, Warmup: workers,
+	res, err := Run(context.Background(), Options{URL: srv.URL, Body: body, Requests: workers, Warmup: workers,
 		Concurrency: workers})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s := Summarize(res.Samples, res.Elapsed); s.Successful != 2*workers {
+	if s := Summarize(res.Samples, res.Elapsed); s.Successful != workers {
 		t.Fatalf("%+v", s)
 	}
-	if n := dialed.Load(); n > workers {
+	// With the bug, the idle limit of 100 closes 100 of the warmup's connections and the measured requests dial them
+	// again: 300 dials, in every run. Without it, a few hundred more than 200 can still happen, and did in CI (207
+	// and 221 on 2026-10-22): a worker's next request can reach the transport before its last connection is back in
+	// the idle pool, and the transport then dials as well as waiting. With one measured request per worker, 30 runs
+	// here with GOMAXPROCS=2 under -race on a busy machine dialled 200 in 25 and 240 to 272 in 5, and the bug 300 in
+	// 10 of 10. So this bound only catches the bug's scale; TestTheDefaultClientKeepsAConnectionPerWorker pins the
+	// cause.
+	if n := dialed.Load(); n >= workers+workers/2 {
 		t.Errorf("%d connections opened for %d workers: the warmup's connections weren't kept", n, workers)
+	}
+}
+
+func TestTheDefaultClientKeepsAConnectionPerWorker(t *testing.T) {
+	for _, c := range []int{1, 100, 101, 1024} {
+		tr := newClient(c).Transport.(*http.Transport)
+		if tr.MaxIdleConnsPerHost != c || tr.MaxIdleConns != 0 || tr.MaxConnsPerHost != 0 {
+			t.Errorf("%d workers: %d idle per host, %d idle in all, %d per host", c, tr.MaxIdleConnsPerHost,
+				tr.MaxIdleConns, tr.MaxConnsPerHost)
+		}
 	}
 }

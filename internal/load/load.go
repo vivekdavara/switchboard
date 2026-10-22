@@ -62,13 +62,7 @@ func Run(ctx context.Context, o Options) (Result, error) {
 	}
 	client := o.Client
 	if client == nil {
-		t := http.DefaultTransport.(*http.Transport).Clone()
-		// A connection per worker, kept: Go's default of 2 idle per host would open a new connection per request,
-		// and the default transport's 100 idle in all dropped the rest above 100 workers (found in the day-4 review).
-		t.MaxIdleConnsPerHost = o.Concurrency
-		t.MaxIdleConns = 0 // no limit in all
-		t.MaxConnsPerHost = 0
-		client = &http.Client{Transport: t}
+		client = newClient(o.Concurrency)
 	}
 	if o.Rate == 0 { // a closed loop's warmup: Concurrency at a time, as the loop itself sends
 		for i := 0; i < o.Warmup; {
@@ -163,6 +157,17 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		res.Samples = samples[:n]
 	}
 	return res, nil
+}
+
+// newClient is Run's default client for concurrency workers: a connection per worker, kept. Go's default of 2 idle
+// per host would open a new connection per request, and the default transport's 100 idle in all dropped the rest
+// above 100 workers (found in the day-4 review).
+func newClient(concurrency int) *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = concurrency
+	t.MaxIdleConns = 0 // no limit in all
+	t.MaxConnsPerHost = 0
+	return &http.Client{Transport: t}
 }
 
 // send sends one request, due at due, and reads the whole answer.
