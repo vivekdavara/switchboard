@@ -644,7 +644,7 @@ As built on day 4:
   stream; rate limits, the cache per client, key and Host refusals with Redis; Redis down; the budget refusing; a
   client leaving), with exact values for each, and the invariants that hold between the metrics and the log's lines
   whatever the requests. The cost's exactness over a million requests. The metrics port through the real `serve`.
-- The config's 11 new kinds of mistake; the log's three settings through `serve`.
+- The config's 16 new kinds of mistake; the log's three settings through `serve`.
 - `internal/load`: an open loop counting a stall's wait and a closed loop not (one worker, a 300 ms stall: about 25
   slow requests against 1), the rate kept, errors by kind, timeouts, nearest-rank percentiles, the timeline.
 - Mutation checks by hand as before (the commit messages list them).

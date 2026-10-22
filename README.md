@@ -602,9 +602,9 @@ Day 4's: `metrics` (`listen`, a `host:port` other than the API's) and `log` (`le
 `error`; `format`: `json`, the default, or `text`). `configs/clients.example.json` serves the metrics on 127.0.0.1:9108.
 
 The file is read strictly: a key given twice, a key in the wrong case, an unknown key or a null is an error that
-names it, not a silent default (156 kinds of mistake, 56 of them day 3's: a rate limit or a cache without Redis, two
-clients with one key, a price with an exponent or seven places...; 11 day 4's, such as metrics on the API's own
-address).
+names it, not a silent default (161 kinds of mistake, 56 of them day 3's: a rate limit or a cache without Redis, two
+clients with one key, a price with an exponent or seven places...; 16 day 4's, such as metrics on the API's port
+or a port past 65535).
 
 ## The mock provider
 
@@ -619,7 +619,7 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet` and `go test -race` over every package (278 test and fuzz functions, 235 of them
+`make check` runs gofmt, `go vet` and `go test -race` over every package (279 test and fuzz functions, 235 of them
 before day 4; about 25 s, with the test Redis on 6382 started if none answers; coverage 96.9% across packages with
 `go test -coverpkg=./...`, and on their own: gateway 98.3%, config 99.3%, load 97.5%, breaker 97.1%, usage 95.7%,
 ratelimit 92.3%, loadgen 90.7%, cache 87.5% (its misses are errors `json.Compact` and `json.Marshal` can't return there). CI runs the same on Ubuntu 24.04 with

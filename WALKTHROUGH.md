@@ -659,7 +659,9 @@ port 0, was wrongly refused); ports go through `net.LookupPort` now. And the unc
 attempt: an attempt that reported its usage and then failed lost it when another provider answered, so each attempt's
 entry in the log's `tried` list now carries its usage, and the metric counts it under that attempt's provider. Four
 more mutants survived (the metrics through the grace, an open loop's warmup sent twice or with one body, truncating
-instead of rounding p); each has a test now.
+instead of rounding p); each has a test now. A third review of those two fixes reproduced no bug; its five surviving
+mutants (where a failed attempt's tokens land, and under which labels) are caught by one table test now, and a port
+past 65535 is refused at load instead of first at serve.
 
 **And the tests it showed were missing?**
 Five mutants survived: the WARN rule's rate-limit and cache conditions (only the totals' was pinned), the in-flight
