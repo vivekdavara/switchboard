@@ -259,6 +259,11 @@ func TestBadInvocationsAndConfigsFail(t *testing.T) {
 			"not a date"},
 		{[]string{"check", "-config", "../../configs/local.json", "-day", "2026-10-20"}, 2,
 			"flag provided but not defined"},
+		// A bad -day is a usage error whatever the file (1 with a file naming no Redis until the day-5 review), and
+		// -h prints the usage and exits 0 (2 until then).
+		{[]string{"usage", "-config", "../../configs/local.json", "-day", "yesterday"}, 2, "not a date"},
+		{[]string{"serve", "-h"}, 0, "-config"},
+		{[]string{"usage", "-help"}, 0, "-day"},
 	} {
 		var errs bytes.Buffer
 		if code := run(context.Background(), tc.args, noEnv, io.Discard, &errs, nil); code != tc.code ||

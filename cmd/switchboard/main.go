@@ -10,7 +10,8 @@
 // The configuration is a JSON file (DESIGN.md, "Configuration"); provider keys come from the environment variables it
 // names. Logs are JSON lines on stderr (or text, and from a level, as the file's log section says): one per chat
 // completion, one per request refused for its Host or its key, and the server's own. With a metrics section the
-// Prometheus metrics are served on a port of their own (GET /metrics). A usage error exits 2; a configuration that
+// Prometheus metrics are served on a port of their own (GET /metrics). A usage error exits 2 (-h, help asked for,
+// exits 0); a configuration that
 // doesn't load or a port that won't open exits 1; a stop by SIGINT or SIGTERM exits 0, whether or not every request
 // finished in the grace, and a second signal during the stop ends the process at once, by that signal (or with exit
 // status 130 if SIGINT was ignored when it started). Two identical signals sent back to back can merge into one before
@@ -112,7 +113,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		day = fs.String("day", time.Now().UTC().Format(time.DateOnly), "the day (UTC) to report")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
-		return 2
+		return helpOrUsage(err)
 	}
 	if *path == "" || fs.NArg() > 0 {
 		fmt.Fprintln(stderr, usageLine)
@@ -313,6 +314,15 @@ func newServer(h http.Handler, base context.Context, log *slog.Logger) *http.Ser
 		BaseContext:       func(net.Listener) context.Context { return base },
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
+}
+
+// helpOrUsage is the exit status for a command line the flag package refused: 0 if it was -h or -help (the usage was
+// asked for and printed), 2 for a usage error (until the day-5 review, -h exited 2 too).
+func helpOrUsage(err error) int {
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	return 2
 }
 
 // version says which switchboard this is: the module version the go command stamps from git (a tag such as v1.0.0

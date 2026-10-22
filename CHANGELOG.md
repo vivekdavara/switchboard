@@ -54,6 +54,10 @@ The first release: an OpenAI-compatible gateway for `/v1/chat/completions`, buil
   fuzz tests and the coverage.
 - `loadgen`: the first byte's time is kept atomically; a request whose deadline fired as its answer began was a data
   race (found by the release check's first full run).
+- From the release review: a chat completion refused for its Host or key carries its `X-Request-Id`, in the answer and
+  the log line; `make check` runs everything CI's test job runs (the cross builds and the benchmarks too); `-h` exits 0
+  in every command (it was a usage error's 2); `switchboard usage` with a bad `-day` exits 2 whatever the file;
+  `loadgen` exits 1 when no request got any answer; the OpenAI SDK check sees the 429 it reports.
 
 **What a 1.x release keeps.** The API's paths, status codes and error codes; the response headers
 (`X-Request-Id`, `X-Switchboard-Attempts`, `X-Switchboard-Provider`, `X-Switchboard-Cache`, the `x-ratelimit-*`

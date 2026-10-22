@@ -30,13 +30,15 @@ func keygen(stdout io.Writer) int {
 // report prints a day's totals from the configuration's Redis: per client and model, completions, cache hits,
 // tokens and cost.
 func report(ctx context.Context, cfg *config.Config, day string, stdout, stderr io.Writer) int {
-	if cfg.Redis == nil {
-		fmt.Fprintln(stderr, "switchboard: the configuration names no redis, so there are no totals")
-		return 1
-	}
+	// The command line first: a bad -day is a usage error (2) whatever the file says (it was 1 for a file with no
+	// Redis until the day-5 review).
 	if _, err := time.Parse(time.DateOnly, day); err != nil {
 		fmt.Fprintf(stderr, "switchboard: -day %q is not a date such as 2026-10-20\n", day)
 		return 2
+	}
+	if cfg.Redis == nil {
+		fmt.Fprintln(stderr, "switchboard: the configuration names no redis, so there are no totals")
+		return 1
 	}
 	rdb := gateway.NewRedis(cfg.Redis)
 	defer rdb.Close()

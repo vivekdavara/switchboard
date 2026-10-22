@@ -7,7 +7,7 @@
 // It serves POST /v1/chat/completions (streamed as server-sent events with "stream": true), GET /v1/models and
 // GET /livez. With -api-key-env it requires
 // "Authorization: Bearer" with that environment variable's value. Logs are JSON lines on stderr: one when it
-// listens, one when it stops, with its counts. A usage error exits 2.
+// listens, one when it stops, with its counts. A usage error exits 2 (-h exits 0).
 package main
 
 import (
@@ -66,6 +66,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stderr 
 	fs.Uint64Var(&cfg.Seed, "seed", cfg.Seed, "the seed of the fates")
 	keyEnv := fs.String("api-key-env", "", "require this environment variable's value as a bearer key")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() > 0 {

@@ -9,11 +9,16 @@
 // -rate R it runs an open loop: a request is due every 1/R seconds and its latency counts from then, so a stall
 // shows in every request it delays (at most -c in flight; a request waiting for a worker is waiting). A client key
 // comes from the environment variable -key-env names, never from the command line.
+//
+// A usage error exits 2 (-h exits 0); a run in which no request got any HTTP answer (nothing listening, every one
+// timed out) exits 1 after its summary, so a script can tell it from a measurement. Answers of any status are results,
+// and exit 0.
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -50,6 +55,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	header := fs.String("timeline-header", "X-Switchboard-Provider", "count this answer header's values per step")
 	asJSON := fs.Bool("json", false, "print the summary as JSON")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() > 0 || *n < 1 || *c < 1 || *warmup < 0 || *rate < 0 {
@@ -88,6 +96,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	}
 	if *interval > 0 {
 		printTimeline(stdout, load.Timeline(res.Samples, *interval, *header), *header)
+	}
+	if s.Requests > 0 && len(s.Statuses) == 0 { // it printed 0.0/s and exited 0 until the day-5 review
+		fmt.Fprintf(stderr, "loadgen: none of the %d requests got an answer\n", s.Requests)
+		return 1
 	}
 	return 0
 }

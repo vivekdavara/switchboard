@@ -76,3 +76,25 @@ func TestLoadgenRefusesBadArguments(t *testing.T) {
 		}
 	}
 }
+
+// -h prints the usage and exits 0; a run in which no request got any answer exits 1 after its summary, so a script
+// can't take it for a measurement (it printed 0.0/s and exited 0 until the day-5 review). Answers of any status,
+// like the 401s above, are results and exit 0.
+func TestHelpExitsZeroAndARunWithNoAnswerExitsOne(t *testing.T) {
+	var out, errs bytes.Buffer
+	if code := run(context.Background(), []string{"-h"}, func(string) string { return "" }, &out, &errs); code != 0 ||
+		!strings.Contains(errs.String(), "-rate") {
+		t.Errorf("-h: exit %d: %s", code, errs.String())
+	}
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL
+	srv.Close() // nothing listens there now
+	out.Reset()
+	errs.Reset()
+	if code := run(context.Background(), []string{"-url", url + "/v1/chat/completions", "-n", "3", "-warmup", "0"},
+		func(string) string { return "" }, &out, &errs); code != 1 ||
+		!strings.Contains(out.String(), "requests 3 in") || !strings.Contains(out.String(), "connection refused: 3") ||
+		!strings.Contains(errs.String(), "none of the 3 requests got an answer") {
+		t.Errorf("exit %d:\n%s%s", code, out.String(), errs.String())
+	}
+}

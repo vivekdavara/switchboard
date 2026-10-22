@@ -186,3 +186,14 @@ func TestACutRateOfOneBreaksEveryAnswer(t *testing.T) {
 		}
 	}
 }
+
+// -h asks for the usage: it is printed, and the exit is 0, not a usage error's 2 (the day-5 review).
+func TestHelpExitsZero(t *testing.T) {
+	for _, h := range []string{"-h", "-help", "--help"} {
+		logs := &syncBuffer{}
+		if got := run(context.Background(), []string{h}, env(nil), logs, nil); got != 0 ||
+			!strings.Contains(logs.String(), "-error-rate") {
+			t.Errorf("%s: exit %d: %s", h, got, logs)
+		}
+	}
+}
