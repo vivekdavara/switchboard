@@ -528,11 +528,9 @@ type attemptLog struct {
 	CompletionTokens int64 `json:"completion_tokens,omitempty"`
 }
 
-// attemptUsage puts u on the last attempt's entries, in attempts and in tried.
+// attemptUsage puts u on the last attempt's entry in tried, the list the log line and observe read (x.attempts is
+// read only for its length).
 func (x *exchange) attemptUsage(u usage.Usage) {
-	if len(x.attempts) > 0 {
-		x.attempts[len(x.attempts)-1].PromptTokens, x.attempts[len(x.attempts)-1].CompletionTokens = u.Prompt, u.Completion
-	}
 	for i := len(x.tried) - 1; i >= 0; i-- {
 		if x.tried[i].Skipped == "" {
 			x.tried[i].PromptTokens, x.tried[i].CompletionTokens = u.Prompt, u.Completion

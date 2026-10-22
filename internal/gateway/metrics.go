@@ -87,7 +87,8 @@ func newMetrics(breakers map[string]*breaker.Breaker) *metrics {
 			[]string{"client", "provider", "upstream_model", "kind"}),
 		uncounted: prometheus.NewCounterVec(prometheus.CounterOpts{Name: "switchboard_uncounted_tokens_total",
 			Help: "Tokens a provider reported for an answer that wasn't counted (a stream that broke or ended in an " +
-				"error after its usage chunk, a client that left): the provider may still bill them."},
+				"error after its usage chunk, a client that left, an attempt that failed before a fallback): the " +
+				"provider may still bill them."},
 			[]string{"client", "provider", "upstream_model", "kind"}),
 		cost: newCosts(),
 	}

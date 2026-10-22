@@ -711,7 +711,8 @@ The chat completion line's fields: `id`, `status`, `model` (as the client sent i
 `prompt_tokens`, `completion_tokens` (with `uncounted: true` when that answer wasn't counted), `cost_usd`,
 `totals_err`, `usage_asked`, `cache`, `cache_stored`, `cache_err`, `upstream_status`, `upstream_ms`, `attempts`,
 `tried` (each attempt and skip, when there is more than one, or a skip; an attempt that reported a usage and then
-failed carries its `prompt_tokens` and `completion_tokens`, uncounted),
+failed, when another attempt followed it, carries its `prompt_tokens` and `completion_tokens`, uncounted; the last
+attempt's are the line's own),
 `streamed` and `events`, `retry_budget_spent`, `code`, `err`. Never a message's content, a client's key or a
 provider's key.
 
