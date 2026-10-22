@@ -644,7 +644,31 @@ Redis 8 as a service container, then `make demo`'s script with the SDK checks (a
 | `load`, `loadgen` (day 4) | an open loop counting a stall's wait in every request it delays and a closed loop not (25 slow requests against 1); the warmup unmeasured, and an open loop's at the rate, its end the timeline's 0 s; a connection kept per worker (200 workers); a run stopped part-way or before its first measured request; p99.9 of 1,000 as the 999th; the rate kept; errors by kind; a timeout; nearest-rank percentiles; the timeline by due time; the key from the environment; bad arguments |
 | `cmd/...` | serving, readiness and a clean stop; the metrics on their own port (none on the API's, none of the API on theirs, a rebinding Host refused, closed after the stop), a busy metrics port, the log's level and format; the drain (`/readyz` 503 while still answering); a request finishing within the grace; one still running after it getting a 503; a second signal ending the real binary at once; the server's timeouts; usage errors and exit codes |
 
-Mutation checks, run by hand: 46 mechanisms removed or broken one at a time, and each made a test fail: 26 in the
+## Reviews and mutation checks
+
+Every day's code was reviewed by background agents, one at a time, each in a worktree of a fixed commit, asked for a
+correctness and docs-against-code review with every finding reproduced as a failing test. I reproduced each finding
+here before fixing it; the tests are kept as `review_*_test.go` (by day: `review_`, `review_d2_`, `review_d3_`,
+`review_d4_`, `review_d5_`, and `review2_` for a day's second review), each opening with the bug it found. Each day's
+mutation checks (a mechanism removed or broken, then the tests run) were done by hand, from a copy of the file.
+
+### Day 1
+
+Three reviews, one agent at a time, each of only the code since the last (16, 21 and 8 minutes, at `07b8b14`,
+`92f8214` and `670dd76`), reproduced 8, 4 and 1 defects, kept as `review_*_test.go` and `review2_*_test.go`. The
+first: a handler returning without writing gave an empty `200 OK` (a malformed chunked body, a client half-closing
+after its request); every `base_url` error quoted the URL, keys in it included; `max_response_bytes` at the largest
+integer overflowed the read (every answer a 502); the mock's hangs moved with its error rate; `/readyz`'s 503 could
+never be seen (the listener closed at once; hence `drain_delay`); and from its suspicions, DNS rebinding (a page's
+`Host` got a 200 and reached the provider: hence `allowed_hosts`), a key ending in `\r`, a second Ctrl-C swallowed,
+and a slow body at the stop cut off unanswered. The second found bugs in those fixes: the Host check refused an
+HTTP/1.0 probe with no `Host` and `::1` spelt out; a key pasted into `api_key_env` was printed in its error; a second
+signal sent right after the first was still lost. The third found that the same signal sent twice by a program merges
+into one (the kernel keeps one pending flag per signal; documented, not fixable), and a latent HTTP/2 hazard (a read
+deadline set after the handler returned), fixed. Their 19 mechanisms broken with every test passing (10, 5 and 4)
+each fail a test now, but one (below).
+
+**Mutation checks**, run by hand: 46 mechanisms removed or broken one at a time, and each made a test fail: 26 in the
 gateway (the header allowlist, the redirect rule, the 401 rule, the content type, the `Host` check with its
 allowance for no `Host`, its exact health exemption and its log, both limits at both edges, the timeouts, the pool,
 never resending, waking a slow body at the stop...), 8 in the stop sequence and the signals, 3 in the
@@ -653,7 +677,25 @@ signal channel's buffer of 2 rather than 1, a defence for an interleaving no tes
 one didn't build, and reading one byte more than the response limit changes nothing (the size check still catches
 it). The commit messages list them; the three reviews found the gaps in the first counts.
 
-Day 3 (205 test and fuzz functions at the start of the review, and more after it): a review (one agent, 17 minutes,
+### Day 2
+
+**Mutation checks** (the commit messages list them): 18 mechanisms of the fallback, the router, the budget and
+the breaker broken one at a time, 16 caught at first (the budget's expiry is caught now; a redundant "stop" flag was
+removed); 17 of the relay and the mock's stream, 15 caught at first (comments before the first event dropped, and a
+clean end without `[DONE]`, are caught now). Then a review (one agent, 21 minutes, at `b3b5e1f`) reproduced four bugs
+as failing tests, kept as `review_d2_*_test.go` (a slow client cut as the provider's timeout, which I had fixed
+meanwhile; a streamed probe holding its breaker; a `[DONE]`-only stream as an answer; the mock checking
+`stream_options` after its draw), and listed 24 one-line changes no test caught. Each was run as a mutant here
+afterwards: all 24 fail a test now (`health_test.go` and others). A second review (one agent, at `ff95f4f`, of the
+fixes only) found that the first fix for the streamed probe had reported every stream's start as a success, so breaks
+after the first chunk never added up to an open breaker (now only a probe reports early), and that a stream
+starting with a byte order mark, which the SSE grammar allows, was refused. Of its 10 one-line survivors, 8 fail a
+test now; the check between attempts survives (no test can make a client leave exactly between two attempts), and so
+does the same check before the first attempt, which is equivalent in practice.
+
+### Day 3
+
+205 test and fuzz functions at the start of the review, and more after it. A review (one agent, 17 minutes,
 at `4134835`, the core of the day) reproduced four bugs, all in streams, kept as `review_d3_*_test.go`: a stream
 with the provider's error event in it (what vLLM sends when its engine fails) was cached and counted, so the error
 was served from the cache for its ttl; taking the usage out dropped whole chunks that only had `"usage": null`
@@ -673,19 +715,20 @@ leaving during the rate limit (net/http notices only once the body is read, and 
 during the cache write (it needs a Redis that answers reads and hangs on writes). SCAN's dedupe is tested with a fake
 whose SCAN returns every key twice.
 
-Day 2's mutation checks (the commit messages list them): 18 mechanisms of the fallback, the router, the budget and
-the breaker broken one at a time, 16 caught at first (the budget's expiry is caught now; a redundant "stop" flag was
-removed); 17 of the relay and the mock's stream, 15 caught at first (comments before the first event dropped, and a
-clean end without `[DONE]`, are caught now). Then a review (one agent, 21 minutes, at `b3b5e1f`) reproduced four bugs
-as failing tests, kept as `review_d2_*_test.go` (a slow client cut as the provider's timeout, which I had fixed
-meanwhile; a streamed probe holding its breaker; a `[DONE]`-only stream as an answer; the mock checking
-`stream_options` after its draw), and listed 24 one-line changes no test caught. Each was run as a mutant here
-afterwards: all 24 fail a test now (`health_test.go` and others). A second review (one agent, at `ff95f4f`, of the
-fixes only) found that the first fix for the streamed probe had reported every stream's start as a success, so breaks
-after the first chunk never added up to an open breaker (now only a probe reports early), and that a stream
-starting with a byte order mark, which the SSE grammar allows, was refused. Of its 10 one-line survivors, 8 fail a
-test now; the check between attempts survives (no test can make a client leave exactly between two attempts), and so
-does the same check before the first attempt, which is equivalent in practice.
+### Day 4
+
+Three reviews, one agent at a time (11 minutes each, at `2b5b865`, `bf7a8e7` and `170029b`). The first reproduced
+seven bugs, kept as `review_d4_*_test.go`: a cache write that worked erased the lookup's failure (no error in the
+line, INFO, uncounted); a stream broken after its usage chunk was logged with tokens nothing counted (now
+`uncounted` and `switchboard_uncounted_tokens_total`); three in `loadgen` that skewed the first measurements (every
+p99.9 one rank high, from `99.9/100*1000` being `999.0000000000001`; only 100 idle connections in all, so it
+re-dialled above 100 workers; an open loop's warmup sent as a burst, putting every chaos fault 0.85 s late); a
+metrics listener on the API's port, which on macOS took the API's local traffic; and a run stopped during the warmup
+reporting -292 years. Every measurement was re-run after the fixes. The second, of the fixes only, found two bugs in
+them: ports compared as strings (`08108` still shadowed `:8108`), and a failed attempt's reported tokens lost when a
+fallback answered (now on its `tried` entry and in the metric). The third reproduced none; its five surviving mutants
+(where a failed attempt's tokens land) and a port past 65535 passing `check` are each caught now. Of all three
+reviews' surviving mutants, every one fails a test now.
 
 ## Design decisions
 
