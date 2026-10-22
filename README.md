@@ -318,10 +318,10 @@ stream again, so the client gets the stream it asked for.
 ## Results (v1.0.0)
 
 Every measurement of day 4, and the benchmarks of days 1, 3 and 4, run again at `45936e1` with `scripts/results.sh
-v1.0.0`, from 16:10 to 16:16 on 2026-10-22: Apple M3 (8 cores), macOS 26.6.2, Go 1.27.1, Redis 8.8.0 on loopback,
-**on battery** (93% to 90%, Low Power Mode off), load average 3.1 to 3.6 at the start and end, other applications open, no build, test or agent running. loadgen, the gateway and the
-mocks share the laptop, and the requests are synthetic. The raw outputs and the conditions are in
-[`results/v1.0.0/`](results/v1.0.0/).
+v1.0.0`, from 16:10 to 16:16 on 2026-10-22: Apple M3 (8 cores), macOS 26.6.2, Go 1.27.1, Redis 8.8.0 on loopback, **on
+battery** (93% to 90%, Low Power Mode off), load average 3.1 to 3.6 at the start and end, other applications open, no
+build, test or agent running. loadgen, the gateway and the mocks share the laptop, and the requests are synthetic. The
+raw outputs and the conditions are in [`results/v1.0.0/`](results/v1.0.0/).
 
 ```bash
 scripts/results.sh v1.0.0   # load.sh (3 runs a case), chaos.sh, the benchmarks; about 6 minutes
@@ -344,7 +344,7 @@ marked; every request got a 200):
 
 - **The gateway adds 56 µs** to a request at a time (0.099 against 0.043 ms; 54 µs on day 4), and **0.42 ms at the
   median** to a provider that takes 360 ms, at 600 a second with about 216 in flight (0.17 ms on day 4, on AC power;
-  all three runs today were 0.30 to 0.44 ms, so the difference is real for this run, and I haven't separated the
+  all three runs today were 0.29 to 0.44 ms, so the difference is real for this run, and I haven't separated the
   battery from the day's changes, of which only the request id's context value touches this path).
 - **32 at a time: 31,301 requests a second** through the gateway (31,247 on day 4), 33,392 with the log at warn, and
   21,247 with a key, a rate limit and the totals in Redis (21,316).
@@ -353,7 +353,8 @@ marked; every request got a 200):
   562,500 prompt and 3,600,000 completion tokens at exactly $2.244375, as on day 4.
 
 **Chaos** (`results/v1.0.0/chaos/`: the same three phases as day 4, 200 requests a second, 8,000 each after a
-200-request warmup, open loop; mocks answering in about 54 ms; the provider timeout 2 s; the default breaker and budget):
+200-request warmup, open loop; mocks answering in about 54 ms; the provider timeout 2 s; the default breaker and
+budget):
 
 | Phase | Answered | p50 | p99 | max | What the metrics say | Day 4 |
 |---|---|---|---|---|---|---|
