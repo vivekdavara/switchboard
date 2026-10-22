@@ -97,8 +97,11 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	if *interval > 0 {
 		printTimeline(stdout, load.Timeline(res.Samples, *interval, *header), *header)
 	}
-	if s.Requests > 0 && len(s.Statuses) == 0 { // it printed 0.0/s and exited 0 until the day-5 review
-		fmt.Fprintf(stderr, "loadgen: none of the %d requests got an answer\n", s.Requests)
+	// Any status line counts as an answer, a 200 whose body then broke off included (Summarize leaves those out of
+	// its statuses, as errors: the first version of this check, from the day-5 review, did too, and the second review
+	// found it). Until then a run against nothing printed 0.0/s and exited 0.
+	if len(res.Samples) > 0 && !slices.ContainsFunc(res.Samples, func(x load.Sample) bool { return x.Status != 0 }) {
+		fmt.Fprintf(stderr, "loadgen: none of the %d requests got an answer\n", len(res.Samples))
 		return 1
 	}
 	return 0
