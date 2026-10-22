@@ -14,6 +14,14 @@
 # power and the load average.
 set -euo pipefail
 
+case "${1:-}" in
+"" | quick) ;;
+*) # a typo of quick ran the whole check (the day-5 third review)
+  echo "usage: scripts/release_check.sh [quick]" >&2
+  exit 2
+  ;;
+esac
+
 cd "$(dirname "$0")/.."
 dir="run/release/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$dir"
