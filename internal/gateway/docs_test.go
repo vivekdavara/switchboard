@@ -132,7 +132,8 @@ func TestTheReadmesErrorExampleIsWhatTheGatewayAnswers(t *testing.T) {
 }
 
 // The docs send a reader to tests and benchmarks by name (WALKTHROUGH's reading orders above all), and the scripts
-// run some by name; a rename would leave them pointing at nothing. A name in a -fuzz, -bench or -run pattern may be a prefix of the function's.
+// run fuzz targets by name; a rename would leave them pointing at nothing. (The scripts' -bench patterns are checked
+// below.) A name in a -fuzz, -bench or -run pattern may be a prefix of the function's.
 func TestEveryTestTheDocsNameExists(t *testing.T) {
 	declared := regexp.MustCompile(`(?m)^func ((?:Test|Fuzz|Benchmark)[A-Za-z0-9_]+)\(`)
 	var funcs []string
@@ -165,5 +166,53 @@ func TestEveryTestTheDocsNameExists(t *testing.T) {
 				t.Errorf("%s names %s, which no test file declares", doc, name)
 			}
 		}
+	}
+}
+
+// Every -bench pattern the Makefile, the scripts and CI run must match a benchmark in each package it is run on: one
+// that matches nothing passes go test silently, and its rows would just be missing from the output the README's
+// tables come from (`-bench Day33` passed every test: a surviving mutant of the day-5 third review).
+func TestEveryBenchmarkPatternMatchesABenchmark(t *testing.T) {
+	declared := regexp.MustCompile(`(?m)^func (Benchmark[A-Za-z0-9_]*)\(`)
+	benchmarks := map[string][]string{} // "./internal/gateway" -> its benchmarks
+	for _, dir := range []string{"../../cmd", "../../internal"} {
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			b, err := os.ReadFile(path)
+			pkg := "./" + strings.TrimPrefix(filepath.Dir(path), "../../")
+			for _, m := range declared.FindAllStringSubmatch(string(b), -1) {
+				benchmarks[pkg] = append(benchmarks[pkg], m[1])
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	command := regexp.MustCompile(`-bench (?:'([^']*)'|(\S+))((?: \S+)*)`)
+	checked := 0
+	for _, file := range []string{"Makefile", "scripts/release_check.sh", "scripts/results.sh", ".github/workflows/ci.yml"} {
+		for _, m := range command.FindAllStringSubmatch(readDoc(t, file), -1) {
+			pattern := strings.ReplaceAll(m[1]+m[2], "$$", "$") // make writes a $ as $$
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				t.Errorf("%s: -bench %q: %v", file, pattern, err)
+				continue
+			}
+			for _, pkg := range strings.Fields(m[3]) {
+				if !strings.HasPrefix(pkg, "./") {
+					continue
+				}
+				if !slices.ContainsFunc(benchmarks[pkg], re.MatchString) {
+					t.Errorf("%s: -bench %q matches no benchmark in %s", file, pattern, pkg)
+				}
+				checked++
+			}
+		}
+	}
+	if checked < 20 {
+		t.Errorf("only %d pattern and package pairs checked: the commands weren't read", checked)
 	}
 }
