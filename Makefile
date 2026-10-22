@@ -1,4 +1,4 @@
-.PHONY: bench build chaos check cross demo fuzz lint load redis redis-stop test
+.PHONY: bench build chaos check cross demo fuzz lint load redis redis-stop release-check test
 
 # The Redis the tests use (day 3): a project-local one on 6382, started by `make test` if none answers there, keeping
 # nothing on disk. Tests that need Redis are skipped when SWITCHBOARD_TEST_REDIS is unset (a plain `go test ./...`),
@@ -79,3 +79,9 @@ cross:
 	GOOS=windows GOARCH=amd64 go build -o /dev/null ./...
 	GOOS=linux GOARCH=arm64 go build -o /dev/null ./...
 	GOOS=darwin GOARCH=arm64 go build -o /dev/null ./...
+
+# Day 5: the release check (README "Release check"): make check, the tests on a clean export of HEAD, the binary's
+# version against HEAD's release tag, the demo, then cross builds, every benchmark run once, the race detector on two
+# cores, 15 s of each fuzz test and the coverage. `scripts/release_check.sh quick` stops after the demo.
+release-check: redis
+	scripts/release_check.sh
