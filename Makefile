@@ -86,8 +86,9 @@ cross:
 	GOOS=linux GOARCH=arm64 go build -o /dev/null ./...
 	GOOS=darwin GOARCH=arm64 go build -o /dev/null ./...
 
-# Day 5: the release check (README "Release check"): make check, the tests on a clean export of HEAD, the binary's
-# version against HEAD's release tag, the demo, then cross builds, every benchmark run once, the race detector on two
-# cores, 15 s of each fuzz test and the coverage. `scripts/release_check.sh quick` stops after the demo.
+# Day 5: the release check (README "Release check"): make check (with its cross builds and benchmarks), the tests on a
+# clean export of HEAD, the binary's version against HEAD's release tags (a clean tree at a tag), the demo, then the
+# race detector on two cores, 15 s of each fuzz test and the coverage. `scripts/release_check.sh quick` stops after the
+# demo.
 release-check: redis
 	scripts/release_check.sh

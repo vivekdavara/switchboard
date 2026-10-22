@@ -750,14 +750,17 @@ so the binary can't claim a version its commit doesn't have; the release check h
 | Step | What it catches |
 |---|---|
 | `make check` | what CI's test job runs: gofmt, vet, the cross builds (Windows, Linux arm64, macOS), `go test -race` with the test Redis, every benchmark once (`make bench-smoke`; not a measurement) |
-| `version` | a binary built at a release tag that doesn't say that tag |
+| `version` | a binary built at a release tag that doesn't say one of HEAD's tags, or a tree with any change at a tag (tracked or not: go would stamp `+dirty`) |
 | `clean-export` | a file the tests need that was never committed, or one gofmt would change: gofmt, vet and the tests on a `git archive` of HEAD |
 | `demo` | the real binaries on their real ports: curl, the OpenAI SDK if `.venv` has it, the metrics against the requests |
 | `race-2-cores` | interleavings eight cores hide: the tests again under `-race` with `GOMAXPROCS=2` |
 | `fuzz` | 15 s of each of the five fuzz tests |
 | `coverage` | prints the total over every package (`-coverpkg=./...`) |
 
-`quick` stops after the demo (about a minute; the whole check takes three and a half). It measures nothing: the
+Each step runs in the background with `set -e` and is waited for, so its first failing command fails it (as an
+`if` condition, bash ignored `set -e` inside it, and a step reported only its last command's status until the day-5
+second review); a fuzz name that matches no test fails too, since `go test -fuzz` only warns. `quick` stops after
+the demo (about a minute; the whole check takes three and a half). It measures nothing: the
 README's numbers come from `make bench`, `scripts/load.sh` and `scripts/chaos.sh`, which need a quiet machine. Its
 first full run failed `make check` on a data race in `loadgen` (below).
 

@@ -19,13 +19,22 @@ dir="run/release/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$dir"
 export SWITCHBOARD_TEST_REDIS="${SWITCHBOARD_TEST_REDIS:-127.0.0.1:6382}"
 
+# step NAME COMMAND...: runs the command (often a function below) with its output in NAME.txt, and stops the check if
+# any command in it fails. It runs in the background and is waited for, not tested in an if: bash ignores set -e
+# inside an if's condition, functions and subshells included, so a step reported only its last command's status (a
+# failing fuzz target but the last, a vet failure followed by passing tests: found by the day-5 second review).
 step() {
   local name="$1"
   shift
-  local start=$SECONDS
+  local start=$SECONDS status=0
   echo "== $name: $*"
-  if ! "$@" >"$dir/$name.txt" 2>&1; then
-    echo "   FAILED after $((SECONDS - start)) s; see $dir/$name.txt"
+  (
+    set -e
+    "$@"
+  ) >"$dir/$name.txt" 2>&1 &
+  wait $! || status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "   FAILED (exit $status) after $((SECONDS - start)) s; see $dir/$name.txt"
     exit 1
   fi
   echo "   ok in $((SECONDS - start)) s"
@@ -49,23 +58,34 @@ conditions() {
 }
 
 # The binary's `switchboard version` names the module version the go command stamps from git: at a release tag, with
-# nothing changed, exactly that tag. Anywhere else it prints the version and says why it isn't checked.
+# nothing changed, exactly that tag. At a tag, the tree must be clean: any change, an untracked file included, makes
+# the go command stamp "+dirty" (a stray file once failed this step while the warning about changes said nothing).
+# Off a tag it prints the version and says it isn't compared.
 versions() {
   go build -o "$dir/bin/" ./cmd/switchboard
-  local line tag
+  local line tags changes
   line="$("$dir/bin/switchboard" version)"
   echo "$line"
-  tag="$(git describe --exact-match --tags --match 'v[0-9]*' HEAD 2>/dev/null || true)"
-  if [ -z "$tag" ]; then
+  tags="$(git tag --points-at HEAD --list 'v[0-9]*')" # every one: git describe would name only one of two
+  changes="$(git status --porcelain)"
+  if [ -z "$tags" ]; then
     echo "HEAD has no release tag: not compared"
-  elif [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-    echo "HEAD is $tag, but tracked files have changes: not compared"
-  elif [[ "$line" != "switchboard $tag ("* ]]; then
-    echo "HEAD is $tag, but the binary says: $line"
-    return 1
-  else
-    echo "matches HEAD's tag $tag"
+    return 0
   fi
+  if [ -n "$changes" ]; then
+    echo "HEAD is tagged $(echo $tags), but the tree has changes, so the build is +dirty; commit or remove them:"
+    echo "$changes"
+    return 1
+  fi
+  local tag
+  for tag in $tags; do
+    if [[ "$line" == "switchboard $tag ("* ]]; then
+      echo "matches HEAD's tag $tag"
+      return 0
+    fi
+  done
+  echo "HEAD is tagged $(echo $tags), but the binary says: $line"
+  return 1
 }
 
 # Tests on a copy of exactly what is committed: a file that was never added, or one gofmt would change, fails here.
@@ -83,11 +103,20 @@ clean_export() {
   )
 }
 
-# Every fuzz test for 15 s (their seeds already run in make test). go test fuzzes one target at a time.
+# Every fuzz test for 15 s (their seeds already run in make test). go test fuzzes one target at a time, and a name
+# that matches none passes with only a warning, so a renamed target would silently stop being fuzzed: that fails here.
 fuzz() {
-  local pkg target
+  local pkg target out
   while read -r pkg target; do
-    go test -run '^$' -fuzz "^$target\$" -fuzztime 15s "$pkg"
+    if ! out="$(go test -run '^$' -fuzz "^$target\$" -fuzztime 15s "$pkg" 2>&1)"; then
+      echo "$out" # what it found, before the step fails
+      return 1
+    fi
+    echo "$out"
+    if grep -q 'no fuzz tests to fuzz' <<<"$out"; then
+      echo "no fuzz test $target in $pkg"
+      return 1
+    fi
   done <<'EOF'
 ./internal/jsonstrict FuzzParseObjectAgreesWithItsOwnOutput
 ./internal/openai FuzzRewriteKeepsTheMeaning
@@ -103,8 +132,8 @@ coverage() {
 }
 
 echo "release check of $(git rev-parse --short=12 HEAD) ($(git describe --tags --always --dirty)), $(date)"
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
-  echo "warning: tracked files have changes: the clean export checks the commit, every other step the working tree"
+if [ -n "$(git status --porcelain)" ]; then
+  echo "warning: the tree has changes: the clean export checks the commit, every other step the working tree"
 fi
 conditions >"$dir/conditions-start.txt" 2>&1
 
