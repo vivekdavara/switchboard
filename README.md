@@ -1006,6 +1006,9 @@ against at most 272 seen without it), and a new test pins the client's settings.
 - Recovery waits for the breaker's next probe: up to a cooldown after a provider is back.
 - The metrics are per process: Prometheus adds up replicas; a breaker's state is each replica's own.
 - The load and chaos runs share one laptop with what they measure.
+- A loadgen run stopped (Ctrl-C) while every measured request is still waiting exits 1, "none of the N requests got
+  an answer", while one stopped before its first measured request exits 0 (the third day-5 review's judgement call,
+  left as v1.0.0 has it).
 - loadgen's `-timeout` runs from a request's send, not its due time, so in an open loop a request that waited for a
   worker can be recorded slower than the timeout.
 - A request whose cache lookup and write both fail logs only the write's error (the metric counts the step once).
