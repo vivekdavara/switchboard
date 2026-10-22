@@ -112,8 +112,8 @@ func (g *Gateway) authenticate(w http.ResponseWriter, r *http.Request) (*http.Re
 		return r, true
 	}
 	refuse := func(code, reason, message string) (*http.Request, bool) {
-		g.log.Warn("client key refused", "reason", reason, "method", r.Method, "path", r.URL.Path,
-			"remote", r.RemoteAddr)
+		g.log.Warn("client key refused", withID(r, "reason", reason, "method", r.Method, "path", r.URL.Path,
+			"remote", r.RemoteAddr)...)
 		g.metrics.refused.WithLabelValues(code).Inc()
 		w.Header().Set("WWW-Authenticate", `Bearer realm="switchboard"`)
 		openai.WriteError(w, openai.Errorf(http.StatusUnauthorized, openai.TypeInvalidRequest, "", code, "%s",

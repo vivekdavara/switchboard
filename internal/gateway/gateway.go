@@ -155,9 +155,16 @@ func (g *Gateway) Close() error {
 // the day-1 second review).
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	health := r.URL.Path == "/livez" || r.URL.Path == "/readyz"
+	// A chat completion's id is made here, before the Host and key checks, so that their refusals carry it too, in
+	// the answer and in the log line (missing from both until the day-5 review).
+	if r.URL.Path == "/v1/chat/completions" {
+		id := g.newID()
+		w.Header().Set("X-Request-Id", id)
+		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, id))
+	}
 	if !health && !g.hostAllowed(r.Host) {
-		g.log.Warn("host not allowed", "host", r.Host, "method", r.Method, "path", r.URL.Path,
-			"remote", r.RemoteAddr)
+		g.log.Warn("host not allowed", withID(r, "host", r.Host, "method", r.Method, "path", r.URL.Path,
+			"remote", r.RemoteAddr)...)
 		g.metrics.refused.WithLabelValues("host_not_allowed").Inc()
 		openai.WriteError(w, openai.Errorf(http.StatusForbidden, openai.TypeInvalidRequest, "", "host_not_allowed",
 			"the Host %q is not one this gateway answers to (allowed_hosts)", r.Host))
@@ -170,6 +177,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	openai.Serve(g.mux, w, r)
+}
+
+type requestIDKey struct{}
+
+// withID adds the request's id, if ServeHTTP made one (a chat completion's), after a log line's other attributes.
+func withID(r *http.Request, attrs ...any) []any {
+	if id, ok := r.Context().Value(requestIDKey{}).(string); ok {
+		return append(attrs, "id", id)
+	}
+	return attrs
 }
 
 // hostAllowed says whether a request's Host header names an allowed host, with or without a port. No Host at all
@@ -270,11 +287,15 @@ type exchange struct {
 }
 
 func (g *Gateway) chat(w http.ResponseWriter, r *http.Request) {
-	x := &exchange{id: g.newID(), began: time.Now()}
+	id, ok := r.Context().Value(requestIDKey{}).(string)
+	if !ok { // reached other than through ServeHTTP
+		id = g.newID()
+		w.Header().Set("X-Request-Id", id)
+	}
+	x := &exchange{id: id, began: time.Now()}
 	g.metrics.inFlight.Inc()
 	defer g.metrics.inFlight.Dec()
 	defer g.logExchange(x)
-	w.Header().Set("X-Request-Id", x.id)
 
 	// 0. The client's rate limit (day 3), before the body is read: a refused request costs one Redis round trip.
 	if cl := clientOf(r); cl != nil {
