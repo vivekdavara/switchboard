@@ -1,0 +1,102 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/vivekdavara/switchboard/internal/gateway
+cpu: Apple M3
+BenchmarkOverhead/direct/small-8         	   20000	     45007 ns/op	        38.00 p50-µs	       151.0 p99-µs
+BenchmarkOverhead/direct/small-8         	   20000	     42065 ns/op	        39.00 p50-µs	       109.0 p99-µs
+BenchmarkOverhead/direct/small-8         	   20000	     43020 ns/op	        39.00 p50-µs	       114.0 p99-µs
+BenchmarkOverhead/direct/small-8         	   20000	     45039 ns/op	        40.00 p50-µs	       136.0 p99-µs
+BenchmarkOverhead/direct/small-8         	   20000	     42362 ns/op	        40.00 p50-µs	       108.0 p99-µs
+BenchmarkOverhead/direct/small-8         	   20000	     42119 ns/op	        39.00 p50-µs	       117.0 p99-µs
+BenchmarkOverhead/gateway/small-8        	   20000	     97248 ns/op	        88.00 p50-µs	       256.0 p99-µs
+BenchmarkOverhead/gateway/small-8        	   20000	     93268 ns/op	        88.00 p50-µs	       237.0 p99-µs
+BenchmarkOverhead/gateway/small-8        	   20000	     93205 ns/op	        88.00 p50-µs	       214.0 p99-µs
+BenchmarkOverhead/gateway/small-8        	   20000	     92991 ns/op	        88.00 p50-µs	       215.0 p99-µs
+BenchmarkOverhead/gateway/small-8        	   20000	     94275 ns/op	        89.00 p50-µs	       222.0 p99-µs
+BenchmarkOverhead/gateway/small-8        	   20000	     93496 ns/op	        89.00 p50-µs	       214.0 p99-µs
+BenchmarkOverhead/direct/chat-8          	   20000	     95822 ns/op	        90.00 p50-µs	       218.0 p99-µs
+BenchmarkOverhead/direct/chat-8          	   20000	     96792 ns/op	        91.00 p50-µs	       211.0 p99-µs
+BenchmarkOverhead/direct/chat-8          	   20000	     96708 ns/op	        91.00 p50-µs	       209.0 p99-µs
+BenchmarkOverhead/direct/chat-8          	   20000	     96584 ns/op	        91.00 p50-µs	       204.0 p99-µs
+BenchmarkOverhead/direct/chat-8          	   20000	     99805 ns/op	        90.00 p50-µs	       233.0 p99-µs
+BenchmarkOverhead/direct/chat-8          	   20000	     94952 ns/op	        90.00 p50-µs	       198.0 p99-µs
+BenchmarkOverhead/gateway/chat-8         	   20000	    196454 ns/op	       182.0 p50-µs	       372.0 p99-µs
+BenchmarkOverhead/gateway/chat-8         	   20000	    200508 ns/op	       184.0 p50-µs	       391.0 p99-µs
+BenchmarkOverhead/gateway/chat-8         	   20000	    199804 ns/op	       183.0 p50-µs	       394.0 p99-µs
+BenchmarkOverhead/gateway/chat-8         	   20000	    206528 ns/op	       185.0 p50-µs	       405.0 p99-µs
+BenchmarkOverhead/gateway/chat-8         	   20000	    203217 ns/op	       185.0 p50-µs	       411.0 p99-µs
+BenchmarkOverhead/gateway/chat-8         	   20000	    199139 ns/op	       183.0 p50-µs	       386.0 p99-µs
+PASS
+ok  	github.com/vivekdavara/switchboard/internal/gateway	53.164s
+goos: darwin
+goarch: arm64
+pkg: github.com/vivekdavara/switchboard/internal/gateway
+cpu: Apple M3
+BenchmarkDay3/plain-8         	    5000	     93969 ns/op	        89.00 p50-µs	       209.0 p99-µs
+BenchmarkDay3/plain-8         	    5000	     97821 ns/op	        90.00 p50-µs	       257.0 p99-µs
+BenchmarkDay3/plain-8         	    5000	     93650 ns/op	        89.00 p50-µs	       217.0 p99-µs
+BenchmarkDay3/plain-8         	    5000	     93427 ns/op	        89.00 p50-µs	       212.0 p99-µs
+BenchmarkDay3/plain-8         	    5000	     94110 ns/op	        89.00 p50-µs	       234.0 p99-µs
+BenchmarkDay3/plain-8         	    5000	     93371 ns/op	        89.00 p50-µs	       213.0 p99-µs
+BenchmarkDay3/key-8           	    5000	     95773 ns/op	        89.00 p50-µs	       248.0 p99-µs
+BenchmarkDay3/key-8           	    5000	     97769 ns/op	        89.00 p50-µs	       280.0 p99-µs
+BenchmarkDay3/key-8           	    5000	     94451 ns/op	        90.00 p50-µs	       226.0 p99-µs
+BenchmarkDay3/key-8           	    5000	     92862 ns/op	        89.00 p50-µs	       214.0 p99-µs
+BenchmarkDay3/key-8           	    5000	     93249 ns/op	        89.00 p50-µs	       216.0 p99-µs
+BenchmarkDay3/key-8           	    5000	     93497 ns/op	        89.00 p50-µs	       207.0 p99-µs
+BenchmarkDay3/key+totals-8    	    5000	    191001 ns/op	       184.0 p50-µs	       375.0 p99-µs
+BenchmarkDay3/key+totals-8    	    5000	    188953 ns/op	       177.0 p50-µs	       415.0 p99-µs
+BenchmarkDay3/key+totals-8    	    5000	    191880 ns/op	       187.0 p50-µs	       333.0 p99-µs
+BenchmarkDay3/key+totals-8    	    5000	    194100 ns/op	       187.0 p50-µs	       373.0 p99-µs
+BenchmarkDay3/key+totals-8    	    5000	    194019 ns/op	       188.0 p50-µs	       353.0 p99-µs
+BenchmarkDay3/key+totals-8    	    5000	    191477 ns/op	       187.0 p50-µs	       327.0 p99-µs
+BenchmarkDay3/key+limit+totals-8         	    5000	    290180 ns/op	       285.0 p50-µs	       427.0 p99-µs
+BenchmarkDay3/key+limit+totals-8         	    5000	    306597 ns/op	       288.0 p50-µs	       604.0 p99-µs
+BenchmarkDay3/key+limit+totals-8         	    5000	    309030 ns/op	       287.0 p50-µs	       516.0 p99-µs
+BenchmarkDay3/key+limit+totals-8         	    5000	    293662 ns/op	       287.0 p50-µs	       458.0 p99-µs
+BenchmarkDay3/key+limit+totals-8         	    5000	    296132 ns/op	       288.0 p50-µs	       497.0 p99-µs
+BenchmarkDay3/key+limit+totals-8         	    5000	    295369 ns/op	       288.0 p50-µs	       454.0 p99-µs
+BenchmarkDay3/cache-miss-8               	    5000	    386213 ns/op	       378.0 p50-µs	       571.0 p99-µs
+BenchmarkDay3/cache-miss-8               	    5000	    384261 ns/op	       376.0 p50-µs	       559.0 p99-µs
+BenchmarkDay3/cache-miss-8               	    5000	    384069 ns/op	       376.0 p50-µs	       561.0 p99-µs
+BenchmarkDay3/cache-miss-8               	    5000	    385402 ns/op	       377.0 p50-µs	       564.0 p99-µs
+BenchmarkDay3/cache-miss-8               	    5000	    399851 ns/op	       378.0 p50-µs	       809.0 p99-µs
+BenchmarkDay3/cache-miss-8               	    5000	    385718 ns/op	       379.0 p50-µs	       547.0 p99-µs
+BenchmarkDay3/cache-hit-8                	    5000	    247452 ns/op	       231.0 p50-µs	       502.0 p99-µs
+BenchmarkDay3/cache-hit-8                	    5000	    232304 ns/op	       228.0 p50-µs	       332.0 p99-µs
+BenchmarkDay3/cache-hit-8                	    5000	    228594 ns/op	       225.0 p50-µs	       321.0 p99-µs
+BenchmarkDay3/cache-hit-8                	    5000	    230246 ns/op	       227.0 p50-µs	       314.0 p99-µs
+BenchmarkDay3/cache-hit-8                	    5000	    230931 ns/op	       227.0 p50-µs	       321.0 p99-µs
+BenchmarkDay3/cache-hit-8                	    5000	    236560 ns/op	       228.0 p50-µs	       444.0 p99-µs
+PASS
+ok  	github.com/vivekdavara/switchboard/internal/gateway	43.629s
+goos: darwin
+goarch: arm64
+pkg: github.com/vivekdavara/switchboard/internal/gateway
+cpu: Apple M3
+BenchmarkObserve/answered-8         	  200000	       528.6 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/answered-8         	  200000	       450.3 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/answered-8         	  200000	       452.7 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/answered-8         	  200000	       449.4 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/answered-8         	  200000	       448.5 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/answered-8         	  200000	       446.9 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/fallback-8         	  200000	       580.4 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/fallback-8         	  200000	       579.1 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/fallback-8         	  200000	       583.3 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/fallback-8         	  200000	       589.6 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/fallback-8         	  200000	       580.8 ns/op	       3 B/op	       1 allocs/op
+BenchmarkObserve/fallback-8         	  200000	       578.7 ns/op	       3 B/op	       1 allocs/op
+BenchmarkLogLine/answered-8         	  200000	      2113 ns/op	    2004 B/op	      11 allocs/op
+BenchmarkLogLine/answered-8         	  200000	      2097 ns/op	    2004 B/op	      11 allocs/op
+BenchmarkLogLine/answered-8         	  200000	      2090 ns/op	    2003 B/op	      11 allocs/op
+BenchmarkLogLine/answered-8         	  200000	      2106 ns/op	    2004 B/op	      11 allocs/op
+BenchmarkLogLine/answered-8         	  200000	      2174 ns/op	    2003 B/op	      11 allocs/op
+BenchmarkLogLine/answered-8         	  200000	      2126 ns/op	    2004 B/op	      11 allocs/op
+BenchmarkLogLine/fallback-8         	  200000	      3241 ns/op	    2085 B/op	      13 allocs/op
+BenchmarkLogLine/fallback-8         	  200000	      3231 ns/op	    2085 B/op	      13 allocs/op
+BenchmarkLogLine/fallback-8         	  200000	      3189 ns/op	    2085 B/op	      13 allocs/op
+BenchmarkLogLine/fallback-8         	  200000	      3171 ns/op	    2085 B/op	      13 allocs/op
+BenchmarkLogLine/fallback-8         	  200000	      3169 ns/op	    2084 B/op	      13 allocs/op
+BenchmarkLogLine/fallback-8         	  200000	      3153 ns/op	    2084 B/op	      13 allocs/op
+PASS
+ok  	github.com/vivekdavara/switchboard/internal/gateway	7.922s

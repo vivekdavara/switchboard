@@ -27,6 +27,25 @@ the questions an interviewer is likely to ask).
   (a request id missing from refusals, `make check` not running all of CI, untested load-table fields, exit codes),
   every measurement run again at the release, and v1.0.0.
 
+## Results at a glance
+
+Measured at the release (`results/v1.0.0/`, from `scripts/results.sh v1.0.0`; README "Results (v1.0.0)" has the
+conditions and the full tables): an Apple M3 laptop on battery, loadgen, the gateway and local mock providers sharing
+it, synthetic requests.
+
+| What | At v1.0.0 | Day 4 |
+|---|---|---|
+| Latency the gateway adds, one request at a time (p50) | 56 µs | 54 µs |
+| Throughput through the gateway, 32 at a time | 31,301 requests/s | 31,247 |
+| Added at the median to a provider taking 360 ms, at 600/s | 0.42 ms | 0.17 ms (on AC power) |
+| One Redis round trip (a key, a rate limit and the totals make two) | 98 µs | 98 µs |
+| A provider killed under 200 requests/s | 8,000 of 8,000 answered, p99 56.6 ms | 8,000 of 8,000, p99 57.9 ms |
+| A provider hung (SIGSTOP), 2 s timeout | 8,000 of 8,000, p99 2,056 ms (the timeout) | 7,989 of 8,000 (11 504s) |
+| Redis hung, then shut down | 8,000 of 8,000, p99 255 ms | 8,000 of 8,000 |
+| Metrics and log line per request | 2.11 µs | 2.09 µs |
+| Completions counted under load, and their cost | 112,500 of 112,500, exactly $2.244375 | the same |
+| Tests | 297 test and fuzz functions, coverage 96.9% | 279, 96.9% |
+
 ## Architecture
 
 ```mermaid
@@ -295,6 +314,76 @@ with `X-Switchboard-Cache: hit` and `X-Switchboard-Attempts: 0`, and no provider
 the client's totals for the day in Redis, which `switchboard usage` prints. A stream has a usage only if
 `stream_options.include_usage` asks; for a client that didn't ask, the gateway asks and takes the usage out of the
 stream again, so the client gets the stream it asked for.
+
+## Results (v1.0.0)
+
+Every measurement of day 4, and the benchmarks of days 1, 3 and 4, run again at `45936e1` with `scripts/results.sh
+v1.0.0`, from 16:10 to 16:16 on 2026-10-22: Apple M3 (8 cores), macOS 26.6.2, Go 1.27.1, Redis 8.8.0 on loopback,
+**on battery** (93% to 90%, Low Power Mode off), load average 3.1 to 3.6 at the start and end, other applications open, no build, test or agent running. loadgen, the gateway and the
+mocks share the laptop, and the requests are synthetic. The raw outputs and the conditions are in
+[`results/v1.0.0/`](results/v1.0.0/).
+
+```bash
+scripts/results.sh v1.0.0   # load.sh (3 runs a case), chaos.sh, the benchmarks; about 6 minutes
+```
+
+**Load** (`results/v1.0.0/load-table.md`: medians of 3 runs, the throughput's range in brackets; closed loops unless
+marked; every request got a 200):
+
+| case | runs | requests/s (median, range) | p50 | p90 | p99 | p99.9 | max | not 200 (all runs) |
+|---|---|---|---|---|---|---|---|---|
+| direct-c1 | 3 | 21,606 (21,428 to 22,212) | 0.043 ms | 0.051 ms | 0.115 ms | 0.209 ms | 0.273 ms | 0 |
+| direct-c32 | 3 | 80,452 (79,489 to 85,663) | 0.294 ms | 0.842 ms | 1.768 ms | 2.765 ms | 5.678 ms | 0 |
+| gateway-c1 | 3 | 9,464 (8,681 to 9,584) | 0.099 ms | 0.125 ms | 0.213 ms | 0.397 ms | 0.946 ms | 0 |
+| gateway-c32 | 3 | 31,301 (30,636 to 31,776) | 0.848 ms | 1.877 ms | 3.170 ms | 6.658 ms | 8.902 ms | 0 |
+| quiet-c32 | 3 | 33,392 (32,631 to 34,589) | 0.763 ms | 1.841 ms | 3.096 ms | 4.587 ms | 7.240 ms | 0 |
+| redis-c1 | 3 | 3,342 (3,339 to 3,346) | 0.295 ms | 0.314 ms | 0.403 ms | 0.579 ms | 0.816 ms | 0 |
+| redis-c32 | 3 | 21,247 (21,052 to 21,661) | 1.392 ms | 2.127 ms | 3.237 ms | 6.405 ms | 11.955 ms | 0 |
+| slow-direct | 3 | 586 (586 to 586) | 360.713 ms | 360.916 ms | 361.965 ms | 365.584 ms | 370.319 ms | 0 |
+| slow-gateway | 3 | 586 (586 to 586) | 361.130 ms | 361.414 ms | 363.006 ms | 367.138 ms | 370.397 ms | 0 |
+
+- **The gateway adds 56 µs** to a request at a time (0.099 against 0.043 ms; 54 µs on day 4), and **0.42 ms at the
+  median** to a provider that takes 360 ms, at 600 a second with about 216 in flight (0.17 ms on day 4, on AC power;
+  all three runs today were 0.30 to 0.44 ms, so the difference is real for this run, and I haven't separated the
+  battery from the day's changes, of which only the request id's context value touches this path).
+- **32 at a time: 31,301 requests a second** through the gateway (31,247 on day 4), 33,392 with the log at warn, and
+  21,247 with a key, a rate limit and the totals in Redis (21,316).
+- **Two Redis round trips add 196 µs** one at a time (0.295 against 0.099 ms; 197 on day 4): 98 µs each.
+- **Counting is still exact**: the Redis case's 3 runs counted 112,500 completions, and `switchboard usage` priced
+  562,500 prompt and 3,600,000 completion tokens at exactly $2.244375, as on day 4.
+
+**Chaos** (`results/v1.0.0/chaos/`: the same three phases as day 4, 200 requests a second, 8,000 each after a
+200-request warmup, open loop; mocks answering in about 54 ms; the provider timeout 2 s; the default breaker and budget):
+
+| Phase | Answered | p50 | p99 | max | What the metrics say | Day 4 |
+|---|---|---|---|---|---|---|
+| a provider killed (10 s), started again (25 s) | 8,000 of 8,000 | 54.3 ms | 56.6 ms | 110 ms | 11 attempts lost (10 in flight, unanswered; 1 refused), each fell back; breaker opened 2 times; 4,011 skips | 8,000; p99 57.9 ms; 12 lost |
+| a provider hung by SIGSTOP (10 s), continued (25 s) | 8,000 of 8,000 | 54.4 ms | 2,056 ms | 2,075 ms | 406 attempts lost (142 unanswered, 264 never fully delivered), every fallback allowed; breaker opened 2 times; 4,410 skips | 7,989 and 11 504s; 405 lost |
+| Redis hung (10 s), continued (20 s), shut down (25 s), started (32 s) | 8,000 of 8,000 | 54.1 ms | 255 ms | 457 ms | 3,510 requests without a rate limit or a cache, 3,495 without their totals; each counted | 8,000; p99 256 ms |
+
+- **The same picture as day 4.** A killed provider costs nothing visible (traffic back at about 29 s, the probe after
+  the one at 20 s that found it dead); a hung one costs its 2 s timeout to every request sent before the breaker hears
+  of five timeouts (p50 2,055 ms in seconds 10 and 11, 54 ms again from second 12); a hung Redis costs 100 ms a step
+  for about a second, until go-redis's dial breaker.
+- **The hung phase's 504s were the retry budget's edge.** The budget counts ten one-second slots, this second's
+  included, so at 200 a second it allows about 370 to 410 retries at a time (20% of the window's requests, plus 10).
+  About 400 fallbacks in 2 s sit at that edge: day 4's run lost 405 attempts and had 11 refused (each a 504); today's
+  lost 406 and had none refused. Both are the budget working; which side of the line a run falls on depends on where
+  the burst lands in the current second.
+
+**Benchmarks** (`results/v1.0.0/bench-medians.txt`, medians of 6; one request at a time in process, the mock with no
+latency; the earlier day's figure in brackets):
+
+| Benchmark | p50 at v1.0.0 |
+|---|---|
+| `BenchmarkOverhead`, the 79-byte request: straight to the mock / through the gateway | 39 / 88 µs, 49 added [day 3: 40 / 87] |
+| `BenchmarkOverhead`, the 4 KB conversation: straight / through | 90.5 / 183.5 µs, 93 added [day 3: 87 / 175] |
+| `BenchmarkDay3`: day 2's path / a client key / the key and the totals | 89 / 89 / 187 µs [87.5 / 88 / 187] |
+| `BenchmarkDay3`: the key, a rate limit and the totals / a cache miss / a cache hit | 287.5 / 377.5 / 227.5 µs [285 / 373 / 227.5] |
+| `BenchmarkObserve` (the metrics), answered / fallback | 0.45 / 0.58 µs, 1 allocation [0.44 / 0.57] |
+| `BenchmarkLogLine` (the line and the metrics), answered / fallback | 2.11 / 3.18 µs [2.09 / 3.07] |
+
+Each within a few percent of its day's figure, the 4 KB conversation's added time the most (93 against 88 µs).
 
 ## Results (day 1)
 
@@ -626,7 +715,7 @@ failures, hangs or cuts.
 
 ## Tests
 
-`make check` runs gofmt, `go vet`, the cross builds, `go test -race` over every package (284 test and fuzz functions
+`make check` runs gofmt, `go vet`, the cross builds, `go test -race` over every package (297 test and fuzz functions
 at v1.0.0: 279 at the end of day 4, 235 before it) and every benchmark once (about 35 s, with the test Redis on 6382
 started if none answers; before the day-5 review it skipped the cross builds and the benchmarks, which only CI ran). Coverage is
 96.9% across packages (`go test -coverpkg=./...`, the release check's last step), and on their own (`go test -cover
@@ -803,7 +892,21 @@ itself. It also listed ten docs mismatches (fixed: `X-Switchboard-Provider` name
 backwards...), a demo check that inferred a 429 from a wait (it sees the 429 now), and judgement calls on exit codes,
 settled before v1.0.0 promises them: `-h` exits 0, a bad `-day` 2, a `loadgen` run with no answer at all 1.
 
-Before the review, the release check's first full run had found a data race in `loadgen` ("Release check").
+A second review (one agent, 10 minutes, at `36ed22a`, of the 17 commits since the first) found four bugs, three in
+that day's new code, kept as `review2_d5_*_test.go` or fixed with their reproducers' cases: the release check passed
+steps that failed (bash ignores `set -e` inside an `if` condition, so a step reported only its last command: a failing
+fuzz target passed unless it was the last, a vet failure passed when the tests after it did); an untracked file at the
+tag failed its version step with a misleading message; the `-h` fix missed `switchboard -h` itself, `version -h` and
+`keygen -h`; and `loadgen`'s new exit 1 took a 200 that broke off mid-body for no answer. Its survivors (any id at all
+in a refusal's line passed; the guard for a run with no samples) fail tests now, and `go test -fuzz` passing with a
+warning for a name that matches nothing led to the release check failing on that and the docs test reading the
+scripts' names.
+
+Before the reviews, the release check's first full run had found a data race in `loadgen` ("Release check"). A test
+kept from day 4's review (`TestReviewD4EveryWorkerKeepsTheConnectionTheWarmupOpened`) failed CI twice on the day,
+with its fix in place: Go's transport dials as well as waiting when a worker's next request beats its connection back
+to the pool, so its bound of one connection per worker was too tight. It now bounds only the bug's scale (300 dials
+against at most 272 seen without it), and a new test pins the client's settings.
 
 ## Design decisions
 
@@ -869,6 +972,8 @@ Before the review, the release check's first full run had found a data race in `
 - No configuration reload: a new client, price or model needs a restart (with `drain_delay`, one without dropped
   requests behind a load balancer).
 - Tested on macOS (here) and Linux (CI); Windows is only cross-compiled, never run.
+- A request to `/v1/chat/completions` that the router itself answers (a `GET`: 405) carries an `X-Request-Id` that no
+  log line holds: the log has a line per chat completion and per refusal of a Host or key, not per 405.
 - A hung provider costs its timeout to every request sent to it before its breaker hears of five timeouts (with a
   2 s timeout at 200 a second, about 400 requests; README "Results (day 4)"); a breaker that counts slow attempts
   before they end would cut that.

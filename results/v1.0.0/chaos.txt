@@ -1,0 +1,211 @@
+== provider-killed
+requests 8000 in 40.05s: 199.8/s; 200: 8000
+latency p50 54.327ms, p90 54.777ms, p99 56.584ms, p99.9 70.356ms, max 109.682ms; first byte p50 54.278ms
+    from    sent      ok  failed         p50         p99  X-Switchboard-Provider
+    0.0s     200     200       0    54.581ms    55.536ms  mock-b 200
+    1.0s     200     200       0    54.520ms    57.562ms  mock-b 200
+    2.0s     200     200       0    54.505ms    56.095ms  mock-b 200
+    3.0s     200     200       0    54.228ms    55.290ms  mock-b 200
+    4.0s     200     200       0    54.294ms    55.661ms  mock-b 200
+    5.0s     200     200       0    54.504ms    58.585ms  mock-b 200
+    6.0s     200     200       0    54.618ms    61.844ms  mock-b 200
+    7.0s     200     200       0    54.027ms    55.539ms  mock-b 200
+    8.0s     200     200       0    54.190ms    55.315ms  mock-b 200
+    9.0s     200     200       0    54.354ms    98.440ms  mock-a 20, mock-b 180
+   10.0s     200     200       0    54.335ms    56.804ms  mock-a 200
+   11.0s     200     200       0    54.064ms    55.343ms  mock-a 200
+   12.0s     200     200       0    54.140ms    55.097ms  mock-a 200
+   13.0s     200     200       0    54.296ms    55.462ms  mock-a 200
+   14.0s     200     200       0    54.352ms    55.154ms  mock-a 200
+   15.0s     200     200       0    54.156ms    59.357ms  mock-a 200
+   16.0s     200     200       0    54.339ms    57.736ms  mock-a 200
+   17.0s     200     200       0    54.169ms    55.458ms  mock-a 200
+   18.0s     200     200       0    54.368ms    55.180ms  mock-a 200
+   19.0s     200     200       0    54.308ms    55.351ms  mock-a 200
+   20.0s     200     200       0    54.052ms    56.006ms  mock-a 200
+   21.0s     200     200       0    54.356ms    55.511ms  mock-a 200
+   22.0s     200     200       0    54.428ms    55.371ms  mock-a 200
+   23.0s     200     200       0    54.369ms    56.138ms  mock-a 200
+   24.0s     200     200       0    54.208ms    55.848ms  mock-a 200
+   25.0s     200     200       0    54.275ms    54.994ms  mock-a 200
+   26.0s     200     200       0    54.250ms    55.388ms  mock-a 200
+   27.0s     200     200       0    54.376ms    56.121ms  mock-a 200
+   28.0s     200     200       0    54.381ms    55.476ms  mock-a 200
+   29.0s     200     200       0    54.369ms    56.579ms  mock-a 199, mock-b 1
+   30.0s     200     200       0    54.425ms    55.489ms  mock-a 3, mock-b 197
+   31.0s     200     200       0    54.388ms    55.245ms  mock-b 200
+   32.0s     200     200       0    54.284ms    56.022ms  mock-b 200
+   33.0s     200     200       0    54.348ms    56.034ms  mock-b 200
+   34.0s     200     200       0    54.273ms    55.736ms  mock-b 200
+   35.0s     200     200       0    53.980ms    54.882ms  mock-b 200
+   36.0s     200     200       0    54.222ms    55.242ms  mock-b 200
+   37.0s     200     200       0    54.313ms    55.806ms  mock-b 200
+   38.0s     200     200       0    54.360ms    54.835ms  mock-b 200
+   39.0s     200     200       0    54.401ms    57.256ms  mock-b 200
+switchboard_attempt_duration_seconds_count{outcome="answered",provider="mock-a"} +4022
+switchboard_attempt_duration_seconds_count{outcome="answered",provider="mock-b"} +4178
+switchboard_attempt_duration_seconds_count{outcome="failed",provider="mock-b"} +1
+switchboard_attempt_duration_seconds_count{outcome="unanswered",provider="mock-b"} +10
+switchboard_attempt_duration_seconds_sum{outcome="answered",provider="mock-a"} +212.552
+switchboard_attempt_duration_seconds_sum{outcome="answered",provider="mock-b"} +220.987
+switchboard_attempt_duration_seconds_sum{outcome="failed",provider="mock-b"} +0.000553
+switchboard_attempt_duration_seconds_sum{outcome="unanswered",provider="mock-b"} +0.291016
+switchboard_attempts_total{outcome="answered",provider="mock-a"} +4022
+switchboard_attempts_total{outcome="answered",provider="mock-b"} +4178
+switchboard_attempts_total{outcome="failed",provider="mock-b"} +1
+switchboard_attempts_total{outcome="unanswered",provider="mock-b"} +10
+switchboard_breaker_opened_total{provider="mock-b"} +2
+switchboard_breaker_state{provider="mock-a",state="closed"} 1
+switchboard_breaker_state{provider="mock-b",state="closed"} 1
+switchboard_completions_total{client="chaos",provider="mock-a",upstream_model="mock-large"} +4022
+switchboard_completions_total{client="chaos",provider="mock-b",upstream_model="mock-large"} +4178
+switchboard_rate_limit_total{client="chaos",result="allowed"} +8200
+switchboard_request_duration_seconds_count{model="smart",streamed="false"} +8200
+switchboard_request_duration_seconds_sum{model="smart",streamed="false"} +440.402
+switchboard_requests_total{code="",model="smart",status="200"} +8200
+switchboard_skips_total{provider="mock-b",reason="circuit_open"} +4011
+switchboard_tokens_total{client="chaos",kind="completion",provider="mock-a",upstream_model="mock-large"} +128704
+switchboard_tokens_total{client="chaos",kind="completion",provider="mock-b",upstream_model="mock-large"} +133696
+switchboard_tokens_total{client="chaos",kind="prompt",provider="mock-a",upstream_model="mock-large"} +28154
+switchboard_tokens_total{client="chaos",kind="prompt",provider="mock-b",upstream_model="mock-large"} +29246
+== provider-hung
+requests 8000 in 40.05s: 199.8/s; 200: 8000
+latency p50 54.449ms, p90 55.360ms, p99 2055.997ms, p99.9 2062.780ms, max 2074.867ms; first byte p50 54.397ms
+    from    sent      ok  failed         p50         p99  X-Switchboard-Provider
+    0.0s     200     200       0    54.316ms    67.963ms  mock-b 200
+    1.0s     200     200       0    54.372ms    56.946ms  mock-b 200
+    2.0s     200     200       0    54.580ms    56.821ms  mock-b 200
+    3.0s     200     200       0    54.734ms    60.777ms  mock-b 200
+    4.0s     200     200       0    54.776ms    55.986ms  mock-b 200
+    5.0s     200     200       0    54.522ms    55.373ms  mock-b 200
+    6.0s     200     200       0    54.648ms    56.314ms  mock-b 200
+    7.0s     200     200       0    54.304ms    59.525ms  mock-b 200
+    8.0s     200     200       0    53.855ms    61.873ms  mock-b 200
+    9.0s     200     200       0    53.946ms  2054.565ms  mock-a 10, mock-b 190
+   10.0s     200     200       0  2055.384ms  2070.192ms  mock-a 200
+   11.0s     200     200       0  2055.118ms  2062.780ms  mock-a 200
+   12.0s     200     200       0    54.049ms    69.845ms  mock-a 200
+   13.0s     200     200       0    53.956ms    57.763ms  mock-a 200
+   14.0s     200     200       0    54.594ms    67.830ms  mock-a 200
+   15.0s     200     200       0    54.242ms    63.841ms  mock-a 200
+   16.0s     200     200       0    54.554ms    55.529ms  mock-a 200
+   17.0s     200     200       0    54.410ms    59.073ms  mock-a 200
+   18.0s     200     200       0    54.539ms    55.386ms  mock-a 200
+   19.0s     200     200       0    54.563ms    55.366ms  mock-a 200
+   20.0s     200     200       0    54.696ms    55.771ms  mock-a 200
+   21.0s     200     200       0    54.636ms    57.736ms  mock-a 200
+   22.0s     200     200       0    54.726ms    56.367ms  mock-a 200
+   23.0s     200     200       0    54.830ms    56.250ms  mock-a 200
+   24.0s     200     200       0    54.617ms    71.667ms  mock-a 200
+   25.0s     200     200       0    54.437ms    56.559ms  mock-a 200
+   26.0s     200     200       0    54.656ms    58.393ms  mock-a 200
+   27.0s     200     200       0    54.624ms    55.798ms  mock-a 200
+   28.0s     200     200       0    54.601ms    57.184ms  mock-a 200
+   29.0s     200     200       0    54.020ms    55.997ms  mock-a 200
+   30.0s     200     200       0    54.302ms    55.401ms  mock-a 200
+   31.0s     200     200       0    54.364ms    56.201ms  mock-a 200
+   32.0s     200     200       0    54.356ms    56.429ms  mock-a 200
+   33.0s     200     200       0    54.145ms    57.570ms  mock-a 199, mock-b 1
+   34.0s     200     200       0    54.391ms    55.288ms  mock-a 7, mock-b 193
+   35.0s     200     200       0    54.347ms    57.015ms  mock-b 200
+   36.0s     200     200       0    54.129ms    56.766ms  mock-b 200
+   37.0s     200     200       0    54.150ms    55.869ms  mock-b 200
+   38.0s     200     200       0    53.866ms    54.830ms  mock-b 200
+   39.0s     200     200       0    54.199ms    55.171ms  mock-b 200
+switchboard_attempt_duration_seconds_count{outcome="answered",provider="mock-a"} +4816
+switchboard_attempt_duration_seconds_count{outcome="answered",provider="mock-b"} +3384
+switchboard_attempt_duration_seconds_count{outcome="failed",provider="mock-b"} +264
+switchboard_attempt_duration_seconds_count{outcome="unanswered",provider="mock-b"} +142
+switchboard_attempt_duration_seconds_sum{outcome="answered",provider="mock-a"} +254.867
+switchboard_attempt_duration_seconds_sum{outcome="answered",provider="mock-b"} +178.955
+switchboard_attempt_duration_seconds_sum{outcome="failed",provider="mock-b"} +528.061
+switchboard_attempt_duration_seconds_sum{outcome="unanswered",provider="mock-b"} +284.085
+switchboard_attempts_total{outcome="answered",provider="mock-a"} +4816
+switchboard_attempts_total{outcome="answered",provider="mock-b"} +3384
+switchboard_attempts_total{outcome="failed",provider="mock-b"} +264
+switchboard_attempts_total{outcome="unanswered",provider="mock-b"} +142
+switchboard_breaker_opened_total{provider="mock-b"} +2
+switchboard_breaker_state{provider="mock-a",state="closed"} 1
+switchboard_breaker_state{provider="mock-b",state="closed"} 1
+switchboard_completions_total{client="chaos",provider="mock-a",upstream_model="mock-large"} +4816
+switchboard_completions_total{client="chaos",provider="mock-b",upstream_model="mock-large"} +3384
+switchboard_rate_limit_total{client="chaos",result="allowed"} +8200
+switchboard_request_duration_seconds_count{model="smart",streamed="false"} +8200
+switchboard_request_duration_seconds_sum{model="smart",streamed="false"} +1252.78
+switchboard_requests_total{code="",model="smart",status="200"} +8200
+switchboard_skips_total{provider="mock-b",reason="circuit_open"} +4410
+switchboard_tokens_total{client="chaos",kind="completion",provider="mock-a",upstream_model="mock-large"} +154112
+switchboard_tokens_total{client="chaos",kind="completion",provider="mock-b",upstream_model="mock-large"} +108288
+switchboard_tokens_total{client="chaos",kind="prompt",provider="mock-a",upstream_model="mock-large"} +33712
+switchboard_tokens_total{client="chaos",kind="prompt",provider="mock-b",upstream_model="mock-large"} +23688
+== redis-hung
+requests 8000 in 40.05s: 199.7/s; 200: 8000
+latency p50 54.059ms, p90 55.143ms, p99 254.936ms, p99.9 455.102ms, max 456.588ms; first byte p50 54.016ms
+    from    sent      ok  failed         p50         p99  X-Switchboard-Provider
+    0.0s     200     200       0    54.797ms    56.204ms  mock-a 200
+    1.0s     200     200       0    54.813ms    56.566ms  mock-a 200
+    2.0s     200     200       0    54.421ms    55.681ms  mock-a 200
+    3.0s     200     200       0    54.660ms    56.060ms  mock-a 200
+    4.0s     200     200       0    54.265ms    56.869ms  mock-a 200
+    5.0s     200     200       0    54.585ms    55.929ms  mock-a 200
+    6.0s     200     200       0    54.397ms    67.444ms  mock-a 200
+    7.0s     200     200       0    54.797ms    56.487ms  mock-a 200
+    8.0s     200     200       0    54.686ms    57.087ms  mock-a 200
+    9.0s     200     200       0    54.448ms   255.683ms  mock-a 200
+   10.0s     200     200       0   153.759ms   456.034ms  mock-a 200
+   11.0s     200     200       0    53.187ms    61.659ms  mock-a 200
+   12.0s     200     200       0    53.040ms    53.613ms  mock-a 200
+   13.0s     200     200       0    54.123ms    55.128ms  mock-a 200
+   14.0s     200     200       0    53.035ms    55.530ms  mock-a 200
+   15.0s     200     200       0    53.052ms    54.587ms  mock-a 200
+   16.0s     200     200       0    53.188ms    76.508ms  mock-a 200
+   17.0s     200     200       0    53.438ms    55.902ms  mock-a 200
+   18.0s     200     200       0    53.475ms    56.238ms  mock-a 200
+   19.0s     200     200       0    53.515ms    56.021ms  mock-a 200
+   20.0s     200     200       0    53.940ms    58.207ms  mock-a 200
+   21.0s     200     200       0    54.434ms    56.712ms  mock-a 200
+   22.0s     200     200       0    54.059ms    56.479ms  mock-a 200
+   23.0s     200     200       0    54.212ms    55.938ms  mock-a 200
+   24.0s     200     200       0    53.352ms   101.190ms  mock-a 200
+   25.0s     200     200       0    53.299ms    54.796ms  mock-a 200
+   26.0s     200     200       0    53.156ms    68.802ms  mock-a 200
+   27.0s     200     200       0    54.034ms    55.165ms  mock-a 200
+   28.0s     200     200       0    54.265ms    55.318ms  mock-a 200
+   29.0s     200     200       0    54.206ms    60.266ms  mock-a 200
+   30.0s     200     200       0    54.102ms    56.374ms  mock-a 200
+   31.0s     200     200       0    54.170ms    56.441ms  mock-a 200
+   32.0s     200     200       0    53.786ms    55.878ms  mock-a 200
+   33.0s     200     200       0    53.572ms    55.510ms  mock-a 200
+   34.0s     200     200       0    53.577ms    55.228ms  mock-a 200
+   35.0s     200     200       0    53.450ms    56.291ms  mock-a 200
+   36.0s     200     200       0    54.316ms    57.570ms  mock-a 200
+   37.0s     200     200       0    54.544ms    55.841ms  mock-a 200
+   38.0s     200     200       0    53.609ms    55.592ms  mock-a 200
+   39.0s     200     200       0    53.486ms   100.758ms  mock-a 200
+switchboard_attempt_duration_seconds_count{outcome="answered",provider="mock-a"} +8200
+switchboard_attempt_duration_seconds_sum{outcome="answered",provider="mock-a"} +433.213
+switchboard_attempts_total{outcome="answered",provider="mock-a"} +8200
+switchboard_breaker_state{provider="mock-a",state="closed"} 1
+switchboard_breaker_state{provider="mock-b",state="closed"} 1
+switchboard_cache_stored_total{model="fast"} +4690
+switchboard_cache_total{model="fast",result="miss"} +4690
+switchboard_cache_total{model="fast",result="unavailable"} +3510
+switchboard_completions_total{client="chaos",provider="mock-a",upstream_model="mock-small"} +8200
+switchboard_rate_limit_total{client="chaos",result="allowed"} +4690
+switchboard_rate_limit_total{client="chaos",result="unavailable"} +3510
+switchboard_redis_errors_total{step="cache"} +3532
+switchboard_redis_errors_total{step="rate_limit"} +3510
+switchboard_redis_errors_total{step="totals"} +3495
+switchboard_request_duration_seconds_count{model="fast",streamed="false"} +8200
+switchboard_request_duration_seconds_sum{model="fast",streamed="false"} +470.857
+switchboard_requests_total{code="",model="fast",status="200"} +8200
+switchboard_tokens_total{client="chaos",kind="completion",provider="mock-a",upstream_model="mock-small"} +262400
+switchboard_tokens_total{client="chaos",kind="prompt",provider="mock-a",upstream_model="mock-small"} +57400
+16:12:24 mock-b killed
+16:12:39 mock-b started
+16:13:17 mock-b stopped
+16:13:32 mock-b continued
+16:14:11 redis stopped
+16:14:21 redis continued
+16:14:26 redis shut down
+16:14:33 redis started

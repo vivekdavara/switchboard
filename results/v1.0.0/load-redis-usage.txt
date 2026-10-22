@@ -1,0 +1,4 @@
+2026-10-22 (UTC), 1 client and model pairs
+  client  model  completions  cache hits  prompt tokens  completion tokens  cost (USD)  unpriced  no usage
+    load   fast       112500           0         562500            3600000    2.244375         0         0
+total cost 2.244375 USD

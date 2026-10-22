@@ -1,0 +1,8 @@
+16:12:24 mock-b killed
+16:12:39 mock-b started
+16:13:17 mock-b stopped
+16:13:32 mock-b continued
+16:14:11 redis stopped
+16:14:21 redis continued
+16:14:26 redis shut down
+16:14:33 redis started
