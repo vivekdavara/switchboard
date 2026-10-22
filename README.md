@@ -37,7 +37,7 @@ it, synthetic requests.
 |---|---|---|
 | Latency the gateway adds, one request at a time (p50) | 56 µs | 54 µs |
 | Throughput through the gateway, 32 at a time | 31,301 requests/s | 31,247 |
-| Added at the median to a provider taking 360 ms, at 600/s | 0.42 ms | 0.17 ms (on AC power) |
+| Added at the median to a provider taking 360 ms, at 600/s | 0.42 ms (-0.03 to 0.14 in an A/B after it) | 0.17 ms (on AC power) |
 | One Redis round trip (a key, a rate limit and the totals make two) | 98 µs | 98 µs |
 | A provider killed under 200 requests/s | 8,000 of 8,000 answered, p99 56.6 ms | 8,000 of 8,000, p99 57.9 ms |
 | A provider hung (SIGSTOP), 2 s timeout | 8,000 of 8,000, p99 2,056 ms (the timeout) | 7,989 of 8,000 (11 504s) |
@@ -346,8 +346,10 @@ marked; every request got a 200):
 
 - **The gateway adds 56 µs** to a request at a time (0.099 against 0.043 ms; 54 µs on day 4), and **0.42 ms at the
   median** to a provider that takes 360 ms, at 600 a second with about 216 in flight (0.17 ms on day 4, on AC power;
-  all three runs today were 0.29 to 0.44 ms, so the difference is real for this run, and I haven't separated the
-  battery from the day's changes, of which only the request id's context value touches this path).
+  this run's three were 0.29 to 0.44 ms). An A/B right after the release, day 4's code against v1.0.0, alternated on
+  the same battery ([`results/slow-case-ab/`](results/slow-case-ab/)), put both within the same tenth of a millisecond
+  (gaps of +0.14 and +0.07 ms for day 4's code, -0.03 and +0.07 for v1.0.0): the day's code added nothing there, and
+  the release run's figure is the run's conditions, which I haven't separated further.
 - **32 at a time: 31,301 requests a second** through the gateway (31,247 on day 4), 33,392 with the log at warn, and
   21,247 with a key, a rate limit and the totals in Redis (21,316).
 - **Two Redis round trips add 196 µs** one at a time (0.295 against 0.099 ms; 197 on day 4): 98 µs each.

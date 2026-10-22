@@ -1,0 +1,4 @@
+day4 round 1: slow p50 direct 360.603 ms, gateway 360.741 ms, gap 0.138 ms; c1 added 56.0 us
+v1 round 1: slow p50 direct 360.765 ms, gateway 360.739 ms, gap -0.026 ms; c1 added 55.6 us
+day4 round 2: slow p50 direct 360.688 ms, gateway 360.756 ms, gap 0.069 ms; c1 added 56.7 us
+v1 round 2: slow p50 direct 360.663 ms, gateway 360.737 ms, gap 0.074 ms; c1 added 56.0 us

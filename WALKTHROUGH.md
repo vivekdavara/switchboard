@@ -785,8 +785,10 @@ I ran every day-4 measurement again at the release's code with `scripts/results.
 `results/v1.0.0/`. One request at a time the gateway adds 56 µs (54 on day 4); 32 at a time it does 31,301 requests a
 second (31,247); two Redis round trips add 196 µs (197); and all 112,500 completions under load were counted and
 priced to exactly $2.244375 again. The one that moved: against a 360 ms provider at 600 a second, the median rose by
-0.42 ms instead of 0.17, in all three runs. Today's runs were on battery and day 4's on power, and the only code change
-on that path is the request id's context value; I report it rather than explain it.
+0.42 ms instead of 0.17, in all three runs. So after the release I ran an A/B: day 4's measured commit in a worktree
+against v1.0.0, alternated twice on the same battery, each run measuring the direct and gateway cases back to back.
+The gaps were +0.14 and +0.07 ms for day 4's code and -0.03 and +0.07 ms for v1.0.0: no regression, and the release
+run's 0.42 is that run's conditions (`results/slow-case-ab/`).
 
 **And the chaos runs?**
 The same picture, with one difference that taught me something about my own budget. With the provider hung, all
