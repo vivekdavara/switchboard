@@ -785,6 +785,12 @@ consequences worth knowing:
   or unreadable (an unreadable entry is a miss, so nothing breaks; the cache just starts cold). A change to the
   bucket's meaning in Redis would reset every client's limit. Either is a release note, not a 2.0.
 
+**What the release review changed** (README "Reviews and mutation checks", day 5). A chat completion's request id is
+made in `ServeHTTP` now, before the Host and key checks, so their 401 and 403 carry it; `make check` runs the cross
+builds and the benchmarks, as CI does; the exit codes the release promises were settled first: `-h` exits 0 in every
+command, a bad `-day` is a usage error (2) whatever the file, and `loadgen` exits 1 when no request got any answer
+(answers of any status are results, and exit 0).
+
 ## Decisions and alternatives
 
 - **Forward raw members, not structs.** Decoding into structs and encoding again is the easy way and loses every
@@ -832,6 +838,10 @@ consequences worth knowing:
 - **An open loop for latency, a closed loop for throughput.** A closed loop hides stalls (coordinated omission); and
   with every answer taking the same time, a closed loop of 256 workers sends in waves of 256 at once, so its median
   measured the queue within a wave (+5 ms through the gateway in a trial run, against +0.2 ms at a steady rate).
+- **The version from the tag, not a constant.** A constant is one more thing a release must remember to change, and
+  a binary could then claim a version its commit doesn't have; the go command's VCS stamp can't.
+- **Exit codes settled before the tag.** A 1.x keeps them, so `-h`'s 2 and `loadgen`'s 0 for a run with no answer
+  were changed at the release rather than after it.
 - **No Redis breaker of the gateway's own.** go-redis already has one for dials: after `PoolSize` dial errors in a
   row it fails every dial at once with the last error and re-dials in the background once a second
   (`internal/pool/pool.go`: `dialConn`, `tryDial`). With Redis hung, requests paid 100 ms a step for about a second, until

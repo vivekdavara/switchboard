@@ -856,6 +856,11 @@ Before the review, the release check's first full run had found a data race in `
 - **The provider's own token counts.** For a stream whose client didn't ask for its usage, the gateway asks and takes
   it out again, rather than estimating tokens it has no tokenizer for.
 - **Money in integer picodollars.** Exact sums, and bounds that make overflow impossible.
+- **The version is the tag's.** `switchboard version` prints what the go command stamps from git, so no constant can
+  disagree with the commit; the release check fails a build at a tag that doesn't say it.
+- **The docs are tested where the release promises something.** The metric names and labels, the configuration
+  example, the error shape and every test the docs cite are checked against the code, since v1.0.0 promises the
+  first three for all of 1.x.
 
 ## Limitations
 
