@@ -29,6 +29,20 @@ down"; `internal/ratelimit/ratelimit.go` (the script, `Take`); `internal/gateway
 `TestAStreamsUsageIsCountedWhetherOrNotTheClientAskedForIt`, `TestUsageTakenOutOfEveryChunk`,
 `TestASecondIdenticalRequestIsAnsweredFromTheCache` and `FuzzAskingForUsageKeepsTheRest`.
 
+**Reading order for day 4:** DESIGN.md "Metrics", "Logs" and "Load and chaos"; `internal/gateway/metrics.go`
+(`observe`, `costs`, `breakers_`), `logExchange` in `internal/gateway/gateway.go` (where `observe` is called, and the
+WARN rule), `Gateway.Metrics`; `serve` in `cmd/switchboard/main.go` (the metrics listener); `internal/config/observe.go`;
+`internal/load/load.go` (`Run`, `send`, `Percentile`, `Timeline`); `scripts/load.sh` and `scripts/chaos.sh`. Then
+`TestTheMetricsCountTheLogLinesFacts`, `agreeWithTheLog`, `TestACostIsExactHoweverManyRequestsAddUpToIt`,
+`TestTheMetricsAreServedOnTheirOwnPort`, `TestAnOpenLoopCountsTheWaitAStallCausesAndAClosedLoopDoesnt` and
+`TestAnAnswerWhoseRedisStepsFailedIsLoggedAtWarn`; and README "Results (day 4)".
+
+**Reading order for day 5:** CHANGELOG.md; DESIGN.md "The release (day 5)"; `scripts/release_check.sh` (`step`,
+`versions`, `clean_export`); `version` in `cmd/switchboard/main.go`; `send` in `internal/load/load.go` (the atomic
+first-byte time); `internal/gateway/docs_test.go`. Then `TestAFirstByteAtTheDeadlineIsNoRace`,
+`TestDesignsMetricsTableIsTheGatewaysMetrics`, `TestEveryTestTheDocsNameExists`, the `review_d5_*` files, and README
+"Results at a glance", "Results (v1.0.0)" and "Reviews and mutation checks".
+
 ## The project (day 1)
 
 **What is Switchboard, in a minute?**
@@ -490,14 +504,6 @@ breaker; `X-Switchboard-Attempts: 0` and the original's bytes, `id` included.
 For a model whose answers should vary, yes, and that's why caching is per model and off by default. It suits
 deterministic calls (temperature 0, classification, extraction, evals run twice).
 
-**Reading order for day 4:** DESIGN.md "Metrics", "Logs" and "Load and chaos"; `internal/gateway/metrics.go`
-(`observe`, `costs`, `breakers_`), `logExchange` in `internal/gateway/gateway.go` (where `observe` is called, and the
-WARN rule), `Gateway.Metrics`; `serve` in `cmd/switchboard/main.go` (the metrics listener); `internal/config/observe.go`;
-`internal/load/load.go` (`Run`, `send`, `Percentile`, `Timeline`); `scripts/load.sh` and `scripts/chaos.sh`. Then
-`TestTheMetricsCountTheLogLinesFacts`, `agreeWithTheLog`, `TestACostIsExactHoweverManyRequestsAddUpToIt`,
-`TestTheMetricsAreServedOnTheirOwnPort`, `TestAnOpenLoopCountsTheWaitAStallCausesAndAClosedLoopDoesnt` and
-`TestAnAnswerWhoseRedisStepsFailedIsLoggedAtWarn`; and README "Results (day 4)".
-
 ## Accounting (day 3)
 
 **Where do the token counts come from?**
@@ -668,3 +674,46 @@ Five mutants survived: the WARN rule's rate-limit and cache conditions (only the
 gauge (tests only read 0 at the end), the metrics staying up through the drain, loadgen's per-host connection limit,
 and the filter that drops unsent samples from a stopped run. Each has a test now that fails with the mutant.
 
+## The release (day 5)
+
+**What does v1.0.0 promise?**
+That a 1.x won't change what a client, an operator or a dashboard depends on: the API's paths, statuses, error codes
+and headers; the configuration's keys and what each means; the metric names and labels; the log line's fields; the
+Redis keys; the commands and their exit codes (CHANGELOG.md). Adding is allowed, changing isn't. The catch I wrote
+down: the config reader is strict, so a key that v1.2 adds is an unknown key, an error, to v1.0. I'd keep the strict
+reader anyway; a misspelt `max_atempts` silently becoming the default is worse than a refused file.
+
+**Where does the version come from?**
+From the git tag, through the go command: since Go 1.24, `go build` stamps the module version from version control,
+so a build at `v1.0.0` with nothing changed reports `v1.0.0`, a build after it a pseudo-version, a modified tree
+`+dirty`. `version` in `cmd/switchboard/main.go` reads it with `debug.ReadBuildInfo`. No constant to forget to bump,
+and the release check fails if a binary built at a tag doesn't report that tag.
+
+**What does the release check do that CI doesn't?**
+CI runs on every push: gofmt, vet, the cross builds, `go test -race`, the benchmarks once, and the demo with the
+OpenAI SDK. The release check runs that here and adds: the tests on a `git archive` of the commit (a file I forgot to
+add passes on my machine and fails there), the version against the tag, the race detector again with two cores (an
+interleaving eight cores hide), 15 s of each fuzz test, and the coverage. It measures nothing; numbers need a quiet
+machine and their own runs.
+
+**Tell me about the bug the release check found.**
+A data race in the load generator, caught once under `-race` in a test that stops a run part-way. loadgen records each
+answer's first byte through httptrace's `GotFirstResponseByte`, which the transport calls from its own read loop. When
+a request's deadline fires just as the answer begins, `client.Do` returns (the context is done) while the read loop
+may still be about to call the hook, so the hook's write and `send`'s read weren't ordered. It showed 0 times in 200
+runs of that test alone, so I wrote one aimed at the moment: 4,000 requests with a 2 ms timeout against a server
+answering in 2 ms. The race detector flagged it in 5 of 5 runs, and in none after making the time an
+`atomic.Pointer`. The gateway's own hook (whether the provider got the whole request) was already an `atomic.Bool` for
+this reason; the load generator, written later, missed it.
+
+**Did it change any published number?**
+No: the race was on the first-byte time, and the README's tables report the whole answer's latency, read in the same
+goroutine after `Do`. A torn read could only have touched the `FirstByte` median `loadgen` prints, which no table
+uses.
+
+**Why test the docs?**
+Because v1.0.0 promises the metric names and labels, and DESIGN's table is where an operator reads them. A test now
+holds the table to the registry both ways (every metric a row with its labels in order, every row a metric), the
+README's configuration example to `configs/local.json`, the README's error example to the gateway's real answer, and
+every test name the docs cite to a declared function. Each was checked by breaking the docs in a copy. The last one
+mattered at once: a name cut short by a letter passed my first version, which accepted prefixes.
