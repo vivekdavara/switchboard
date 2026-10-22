@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vivekdavara/switchboard/internal/mock"
 )
 
 // writeObservedConfig is writeConfig with extra top-level members (a metrics or log section).
@@ -163,6 +165,48 @@ func TestTheMetricsAnswerThroughTheDrain(t *testing.T) {
 	}
 	if status, _ := get(t, "http://"+addr+"/readyz", ""); status != 503 {
 		t.Errorf("readyz during the drain: %d", status)
+	}
+	if c := <-code; c != 0 {
+		t.Errorf("exit %d", c)
+	}
+}
+
+func TestTheMetricsAnswerThroughTheGraceAndShowTheRequestInFlight(t *testing.T) {
+	// The day-4 second review's surviving mutant: closing the metrics as the grace began passed, since only the drain
+	// was tested. A request held 1 s by its provider keeps the grace going.
+	_, up := upstream(t, func(c *mock.Config) { c.TTFT = time.Second })
+	logs := &syncBuffer{}
+	addr, stop, code := start(t, writeObservedConfig(t, up.URL,
+		`"shutdown_grace":"5s","metrics":{"listen":"127.0.0.1:0"}`), logs)
+	m := metricsAddr(t, logs)
+	answered := make(chan int, 1)
+	go func() {
+		status, _, _ := chat(addr)
+		answered <- status
+	}()
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if _, body := get(t, "http://"+m+"/metrics", ""); strings.Contains(body, "switchboard_requests_in_flight 1\n") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the request was never in flight")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	stop()
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(logs.String(), `"msg":"stopping"`); {
+		if time.Now().After(deadline) {
+			t.Fatalf("never stopped:\n%s", logs)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond) // well into the grace
+	if status, body := get(t, "http://"+m+"/metrics", ""); status != 200 ||
+		!strings.Contains(body, "switchboard_requests_in_flight 1\n") {
+		t.Errorf("during the grace: %d", status)
+	}
+	if status := <-answered; status != 200 {
+		t.Errorf("the request in flight got %d", status)
 	}
 	if c := <-code; c != 0 {
 		t.Errorf("exit %d", c)
