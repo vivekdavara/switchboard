@@ -3,7 +3,9 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -126,5 +128,39 @@ func TestTheReadmesErrorExampleIsWhatTheGatewayAnswers(t *testing.T) {
 		var compact bytes.Buffer
 		json.Compact(&compact, []byte(block))
 		t.Errorf("README says\n%s\nthe gateway answers\n%s", compact.String(), body)
+	}
+}
+
+// The docs send a reader to tests and benchmarks by name (WALKTHROUGH's reading orders above all); a rename would
+// leave them pointing at nothing. A name in a -fuzz, -bench or -run pattern may be a prefix of the function's.
+func TestEveryTestTheDocsNameExists(t *testing.T) {
+	declared := regexp.MustCompile(`(?m)^func ((?:Test|Fuzz|Benchmark)[A-Za-z0-9_]+)\(`)
+	var funcs []string
+	for _, dir := range []string{"../../cmd", "../../internal"} {
+		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			b, err := os.ReadFile(path)
+			for _, m := range declared.FindAllStringSubmatch(string(b), -1) {
+				funcs = append(funcs, m[1])
+			}
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(funcs) < 250 {
+		t.Fatalf("only %d test functions found", len(funcs))
+	}
+	named := regexp.MustCompile(`(-(?:fuzz|bench|run) '?\^?)?\b((?:Test|Fuzz|Benchmark)[A-Z][A-Za-z0-9_]+)`)
+	for _, doc := range []string{"README.md", "DESIGN.md", "WALKTHROUGH.md", "CHANGELOG.md"} {
+		for _, m := range named.FindAllStringSubmatch(readDoc(t, doc), -1) {
+			pattern, name := m[1] != "", m[2]
+			if !slices.ContainsFunc(funcs, func(f string) bool { return f == name || pattern && strings.HasPrefix(f, name) }) {
+				t.Errorf("%s names %s, which no test file declares", doc, name)
+			}
+		}
 	}
 }
