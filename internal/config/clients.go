@@ -298,8 +298,8 @@ func (c *Config) parseDay3(clients []json.RawMessage, hasClients bool, redisRaw 
 		c.Redis = r
 	}
 	if hasClients && len(clients) == 0 {
-		return errors.New("clients is empty, so every request would be refused; leave it out to serve without " +
-			"client keys")
+		return errors.New("clients is empty, so no request would need a key; add a client, or leave clients out " +
+			"to serve without client keys")
 	}
 	c.clientsByHash = map[[sha256.Size]byte]*Client{}
 	names := map[string]bool{}

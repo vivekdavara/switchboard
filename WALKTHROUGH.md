@@ -562,9 +562,10 @@ when that attempt failed, so the next provider's answer was billed with the firs
 only its usage, and each attempt starts with no usage.
 
 **What does day 3 cost a request, in numbers?**
-Its Redis round trips, each 95 to 99 µs on this Mac's loopback (README "Results (day 3)"): a rate-limited, accounted
+Its Redis round trips, each 93 to 99 µs on this Mac's loopback (README "Results (day 3)"): a rate-limited, accounted
 request is 285 µs at p50 against 87.5 µs without day 3, and a cache hit 227.5 µs. The key itself is 0.5 µs. Taking
-`"usage": null` out of a chunk is 2.7 µs. The round trips are sequential; batching the totals is the obvious cut.
+`"usage": null` out of a chunk is 0.41 µs on the fast path for OpenAI's own shape (2.7 µs by parsing the chunk, which
+other shapes still take). The round trips are sequential; batching the totals is the obvious cut.
 
 **What isn't counted?**
 Errors, broken streams (the provider may still bill the tokens it sent; the log line records the break), and
@@ -620,7 +621,7 @@ before the handler returns means every log line says whether its totals were wri
 gateway dies. I'd batch if a provider answered in a millisecond, or if Redis were across a slow network.
 
 **What happens when a provider dies?**
-Killed (connections refused): nothing visible. Of 8,000 requests at 200 a second, all got a 200, p99 56 ms. The
+Killed (connections refused): nothing visible. Of 8,000 requests at 200 a second, all got a 200, p99 57.9 ms. The
 12 attempts that hit the dead provider fell back at once, its breaker opened after five failures in a row, and every
 later request skipped it (4,010 skips) until probes: one 10 s later failed, one 20 s later found it back. Traffic
 returned 5 s after the provider did, because recovery waits for the next probe.

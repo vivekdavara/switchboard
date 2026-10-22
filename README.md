@@ -131,9 +131,10 @@ started, so the client gets an error event and a cut transfer rather than a 502,
 
 Day 3's part writes `run/day3.json` (gitignored) with three keys made by `switchboard keygen`: alice may send 2
 requests at once and 60 a minute, so her third is a 429 (her second was a cache hit, which still counts); bob's
-second identical request is a hit; and carol, with a burst of 1, sends two requests through the OpenAI SDK, whose
-second gets a 429 that the SDK itself waits out (it reads `retry-after-ms`) before retrying: answered 1.02 s later,
-with no retry code of the client's. The stream bob asks for without `include_usage` has no usage in it, yet is
+second identical request is a hit; and carol, with a burst of 1, sends two requests through the OpenAI SDK, one after the
+other, whose second gets a 429 that the SDK itself waits out (it reads `retry-after-ms`) before retrying: answered
+1.02 s later, with no retry code of the client's (the check sees the 429 and the retry's 200 through the SDK's HTTP
+client). The stream bob asks for without `include_usage` has no usage in it, yet is
 counted, because the gateway asked for it and took it out again. `switchboard usage` prints the totals. Day 4's
 checks read that gateway's metrics (served on 127.0.0.1:9108) and compare 8 series with the requests the demo sent.
 
@@ -242,8 +243,9 @@ What the client gets for each provider outcome:
 
 If the client goes away, the provider's request is cancelled too. Each chat completion's response carries
 `X-Request-Id` (also on the request to the provider and in the log line); once the model is known, also
-`X-Switchboard-Attempts`, and `X-Switchboard-Provider` (whose answer it is) when a provider answered (not on a
-refusal before routing, nor on the `circuit_open` 503).
+`X-Switchboard-Attempts`, and `X-Switchboard-Provider` once a provider was tried: the last one tried, whose answer it
+is when one answered, and whose failure the gateway's own 502, 503 or 504 reports when none did (not on a refusal
+before routing, nor on the `circuit_open` 503, when none was tried).
 
 **Fallback (day 2).** The table is what one attempt gives. A request tries the model's targets in weighted order
 (standbys of weight 0 last), at most `max_attempts` of them, each target once, and each attempt ends in one of three
@@ -272,7 +274,8 @@ writing to a slow client doesn't either).
 `Authorization: Bearer <key>` (what an OpenAI SDK sends as its `api_key`); without one it is 401 `missing_api_key`,
 with a key nobody has 401 `invalid_api_key` (unknown paths too, so nothing is learnt without a key). A client with a
 `rate_limit` takes a request from its token bucket in Redis before its body is read; every answer then carries
-`x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests` and `x-ratelimit-reset-requests`, and an empty bucket
+`x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests` and `x-ratelimit-reset-requests` (but when Redis
+couldn't say, which leaves nothing to report), and an empty bucket
 is 429 `rate_limit_exceeded` with `Retry-After` and `retry-after-ms`. The bucket counts requests, not the gateway's
 attempts. When Redis can't answer within its `timeout`, the request goes on unlimited (or is 503 with `on_error:
 refuse`).
@@ -415,7 +418,7 @@ python3 scripts/bench_medians.py < run/bench-day3.txt
 | a cache that always misses | 373 µs [373, 374] | 504 µs | 378.1 µs | 3 (GET, MULTI, SET) |
 | a cache that always hits | 227.5 µs [227, 228] | 286.5 µs | 229.9 µs | 2 (GET, MULTI); no provider |
 
-- A client key costs about 0.5 µs (a SHA-256 and a map lookup). Each Redis round trip costs 95 to 99 µs on this
+- A client key costs about 0.5 µs (a SHA-256 and a map lookup). Each Redis round trip costs 93 to 99 µs on this
   Mac's loopback (the differences between the rows): one rate-limit check alone (`BenchmarkTake`, an EVALSHA) is 88.9 µs [88.7, 89.0], and redis-benchmark's
   own PING with one client has a p50 of 79 µs here (`redis-benchmark -p 6382 -n 20000 -c 1 -q -t ping_mbulk`, 15:53).
   So day 3's cost is its round trips, made one after another: about 200 µs for a rate-limited, accounted request.
@@ -433,8 +436,8 @@ python3 scripts/bench_medians.py < run/bench-day3.txt
   parse: 3,146,813 inputs in 46 s, no difference.
 - The same run's day-1 overhead (`BenchmarkOverhead`): 87 µs through the gateway against 40 µs straight to the mock
   for the small request (47 µs added; 42 on day 1, 44 on day 2), 175 against 87 µs for the 4 KB one.
-- The OpenAI Python SDK and the 429 (the demo): carol, with a burst of 1 at 60 a minute, sends two requests at once;
-  the second is answered 1.02 s later, the SDK having read `retry-after-ms` and retried by itself (1.02, 1.02 and
+- The OpenAI Python SDK and the 429 (the demo): carol, with a burst of 1 at 60 a minute, sends two requests, the
+  second as soon as the first is answered; the second is answered 1.02 s later, the SDK having read `retry-after-ms` and retried by itself (1.02, 1.02 and
   1.01 s in three demo runs).
 
 ## Results (day 4)

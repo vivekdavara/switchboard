@@ -121,12 +121,14 @@ every path but the two health endpoints needs a client's key first (401 otherwis
    header goes upstream: not the client's `Authorization` (its key for the gateway is no business of the
    provider's), not cookies, not `OpenAI-Organization`.
 8. **Answer.** See the next section. The client also gets `X-Request-Id`, `X-Switchboard-Provider` (the provider
-   whose answer it is) and `X-Switchboard-Attempts` (how many targets were tried). From day 2, steps 6 to 8 run once
+   last tried: whose answer it is, or whose failure a 502 or 504 reports) and `X-Switchboard-Attempts` (how many
+   targets were tried). From day 2, steps 6 to 8 run once
    per target until one answers ("Fallback", below), and a streamed answer is relayed as it comes ("Streaming").
 9. **Count (day 3).** A completion's usage is read and priced, and added to the client's daily totals; a model with
    a cache keeps the answer ("Accounting", "Caching").
 
-The request id is 16 random hex digits made by the gateway, also on every log line about the request.
+The request id is 16 random hex digits made by the gateway, also on every log line about the request, a refusal of
+its Host or key included (made in `ServeHTTP` since the day-5 review).
 
 ## Mapping the provider's answer
 
@@ -526,8 +528,8 @@ A null is an error too, not "the default".
   million, and `burst`, from 1 to a million, by default a minute's requests), and `prices` (each `provider`,
   `upstream_model`, `input_per_million`, `output_per_million`: plain decimals from 0 to 1000 with at most 6 places, no
   exponent and no quotes). On a model, `cache` (`ttl` from 1 ms to 30 days, `shared`); on a provider, `stream_usage`
-  (default true). A rate limit or a cache without `redis` is an error, and so is an empty `clients` list (every
-  request would be refused), two clients with one hash, a client named `anonymous`, and a price given twice. A key
+  (default true). A rate limit or a cache without `redis` is an error, and so is an empty `clients` list (no client
+  would then be asked for a key, which a list was surely meant to require), two clients with one hash, a client named `anonymous`, and a price given twice. A key
   pasted into `key_sha256`, or a password into `password_env`, is never printed in an error.
 
 ```json
@@ -878,7 +880,7 @@ What day 3 leaves for them to respect:
 - Every Redis step is bounded by `redis.timeout` and none may fail a request it doesn't have to ("When Redis is
   down"); day 4's chaos run should take Redis down too, not only a provider.
 - A request makes up to four Redis round trips (the limit, the cache lookup, the totals, and keeping a miss's
-  answer), one after another, 95 to 99 µs each on this Mac's loopback (README "Results (day 3)"). The load test
+  answer), one after another, 93 to 99 µs each on this Mac's loopback (README "Results (day 3)"). The load test
   decides whether to batch the totals in the background, and whether to pipeline the cache write with them.
 - The cache doesn't stop a stampede: N identical requests at once all miss and all go upstream. A single flight per
   key (in one gateway) or a lock in Redis (across gateways) is the fix if the load test shows it matters.
