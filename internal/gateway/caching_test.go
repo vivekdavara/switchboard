@@ -63,7 +63,8 @@ func TestASecondIdenticalRequestIsAnsweredFromTheCache(t *testing.T) {
 	lines := logLines(t, logs, "chat completion")
 	if lines[0]["cache"] != "miss" || lines[0]["cache_stored"] != true || lines[1]["cache"] != "hit" ||
 		lines[1]["cost_usd"] != nil || lines[1]["prompt_tokens"] != nil || lines[1]["upstream_status"] != nil ||
-		lines[1]["provider"] != "p0" {
+		lines[1]["provider"] != "p0" || lines[1]["upstream_model"] != "mock-small" ||
+		lines[1]["response_bytes"] != float64(len(second)) {
 		t.Errorf("log: %v\n%v", lines[0], lines[1])
 	}
 	rows := today(t, totals)
@@ -158,8 +159,12 @@ func TestAFinishedStreamIsKeptAndABrokenOneIsNot(t *testing.T) {
 			t.Errorf("event %d: %q, then %q", i, first[i].raw, second[i].raw)
 		}
 	}
-	if lines := logLines(t, logs, "chat completion"); lines[1]["events"] != 34.0 || lines[1]["streamed"] != true {
-		t.Errorf("log: %v", lines[1])
+	// The hit's line names the model that wrote the answer and the bytes it wrote: the miss's (two surviving mutants
+	// of the day-5 review).
+	if lines := logLines(t, logs, "chat completion"); lines[1]["events"] != 34.0 || lines[1]["streamed"] != true ||
+		lines[1]["upstream_model"] != "mock-small" || lines[1]["response_bytes"] != lines[0]["response_bytes"] ||
+		lines[0]["response_bytes"] == nil {
+		t.Errorf("log: %v\n%v", lines[0], lines[1])
 	}
 	for range 2 {
 		readStream(t, srv, strings.Replace(askStream, `"m"`, `"b"`, 1))

@@ -231,3 +231,24 @@ func TestAFullBucketGivesNoCreditForTheTimeItSatFull(t *testing.T) {
 		t.Errorf("half a second after the last request: %+v; the half second it sat full before counts for nothing", d)
 	}
 }
+
+// The fastest rate the configuration allows, 1,000,000 a minute, is a token every 60 µs: a full bucket's expiry is
+// then under a millisecond, which the script rounds up (PX 0 is an error to Redis, so rounding down made every check
+// of such a client fail as "unavailable"; a surviving mutant of the day-5 review).
+func TestTheFastestRateAllowedWorks(t *testing.T) {
+	l, c, rdb := limiter(t)
+	limit := config.RateLimit{PerMinute: config.MaxRequestsPerMinute, Burst: 1}
+	if d := take(t, l, "c", limit); !d.Allowed || d.Reset != 60*time.Microsecond {
+		t.Fatalf("the first: %+v", d)
+	}
+	if ttl, err := rdb.PTTL(context.Background(), l.Key("c")).Result(); err != nil || ttl <= 0 || ttl > time.Millisecond {
+		t.Errorf("the bucket's expiry: %v %v", ttl, err)
+	}
+	if d := take(t, l, "c", limit); d.Allowed || d.RetryAfter != 60*time.Microsecond {
+		t.Errorf("the second at once: %+v", d)
+	}
+	c.advance(60 * time.Microsecond)
+	if d := take(t, l, "c", limit); !d.Allowed {
+		t.Errorf("60 µs later: %+v", d)
+	}
+}

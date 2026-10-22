@@ -315,3 +315,19 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// check says whether a cache is shared: a shared cache tells one client what another asked (DESIGN "Caching"), so
+// the summary an operator reads before starting must say so (a surviving mutant of the day-5 review).
+func TestCheckSaysWhichCachesAreShared(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "caches.json")
+	os.WriteFile(cfg, []byte(`{"redis":{"addr":"127.0.0.1:6382"},
+		"providers":[{"name":"p","base_url":"http://127.0.0.1:8118/v1"}],
+		"models":[{"name":"own","provider":"p","cache":{"ttl":"1m"}},
+			{"name":"common","provider":"p","cache":{"ttl":"2m","shared":true}}]}`), 0o600)
+	var out bytes.Buffer
+	if code := run(context.Background(), []string{"check", "-config", cfg}, noEnv, &out, io.Discard, nil); code != 0 ||
+		!strings.Contains(out.String(), "model own -> p as own (weight 1); no fallback; cached for 1m0s\n") ||
+		!strings.Contains(out.String(), "model common -> p as common (weight 1); no fallback; cached for 2m0s, shared by every client\n") {
+		t.Errorf("exit %d:\n%s", code, out.String())
+	}
+}
